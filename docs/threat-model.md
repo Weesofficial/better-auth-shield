@@ -40,6 +40,8 @@ What better-auth-shield defends against, what it doesn't, and the reason behind 
 | --- | --- | --- |
 | Per-recipient send limit | 3 per 10 min, 10 a day, across IPs | A real user rarely needs more than a couple of codes. The daily cap bounds the cost of one phone number. |
 | Same answer for every recipient | `429 SEND_LIMITED` whether or not an account exists | So the limit doesn't enumerate accounts. |
+| Email changes count by the new address | Same limits | A signed-in user could otherwise mail any address through `/change-email` or `/email-otp/request-email-change`. Still blocked while a password change or two-factor setup is due. |
+| Sign-ups count by address with `onExistingUserSignUp` | Same limits | Better Auth mails the owner of a taken address on every attempt. Free addresses count too, so the 429 doesn't tell them apart. |
 
 Pumping attacks rotate through many numbers, which per-recipient limits can't stop. Limit SMS by country or prefix with your provider, and keep Better Auth's IP rate limiter on.
 
@@ -50,6 +52,8 @@ Pumping attacks rotate through many numbers, which per-recipient limits can't st
 | Step-up on sensitive endpoints | Off; `STEP_UP_PATHS`, 5 min when on | A thief with only a cookie can't change the email, turn off two-factor, make backup codes or delete the account without the password or a second factor. |
 | A per-user cap on step-up attempts | Strict rule (5 then lock) | Better Auth doesn't cap `/two-factor/verify-*` on a signed-in session. Without the cap, a thief could keep guessing six-digit codes. |
 | A new sign-in counts as a step-up | — | The user just proved themselves, and asking again is friction with no security gain. |
+| Step-up on endpoints that mint a session | `/device/approve`, `/electron/transfer-user` | The new session would count as a fresh sign-in, a free step-up for the thief. |
+| Step-up on passwordless two-factor setup | With `allowPasswordless`, for users without a password | Better Auth checks nothing there, so a thief could enroll their own authenticator and lock the owner out. |
 | Required two-factor | Off; 7-day grace when on | A stolen password alone stops being enough for the users you choose. Covered users can't turn it off. |
 | Forced password change | Off; `shieldRequirePasswordChange` or `maxAgeDays` | After a breach, a known-bad password is accepted only for the change itself. |
 
@@ -70,6 +74,7 @@ The trade-off is real: a global lock blocks the owner as well. If griefing worri
 - A lock answers the same for known and unknown identifiers: same status, body and `Retry-After`.
 - Send limits answer the same for every recipient.
 - The reuse check runs only after a valid reset token, OTP or current password. A stranger can't use `PASSWORD_REUSED` to test old passwords.
+- `/admin/set-user-password` is never refused for reuse, so an admin can't use it to test a user's passwords. The replaced password still goes into history.
 
 Shield doesn't change Better Auth's own answers. Sign-up and some plugin endpoints can still reveal that an account exists; see Better Auth's docs on email enumeration.
 
@@ -93,9 +98,9 @@ Someone holding both the database and the auth secret can test guesses against t
 
 - **Secondary storage overshoot.** Under heavy concurrency, a few more failures than the limit may be logged before the lock. The lock still holds.
 - **Separate counters per field.** Email and username are counted separately, so one account gets two strict budgets. That is at most 10 guesses per window instead of 5.
-- **Email-change flooding.** A signed-in user can ask `/change-email` or `/email-otp/request-email-change` to mail any address, and send limits don't cover them yet: putting them on the send list would also open them during a forced password change.
 - **Spent reset codes.** On a store without transactions, an email-OTP or phone reset refused for reuse has already used up its code.
-- **Cookie cache delay.** With `session.cookieCache`, a newly set `passwordChangeRequired` flag or two-factor deadline reaches an existing session only when the cache refreshes. Step-ups and cleared flags apply at once.
+- **Cookie cache delay.** With `session.cookieCache`, a newly set `passwordChangeRequired` flag reaches an existing session only when the cache refreshes. Step-ups, cleared flags and required two-factor (which reads the stored user) apply at once.
+- **Passwordless setup timeout.** A user without a password who takes longer than `stepUp.maxAge` to finish setting up two-factor has to sign in again.
 - **A stale deadline.** A user whose two-factor deadline passed while they weren't covered is blocked immediately if they become covered again later. They don't get a new grace period.
 
 ## Reporting

@@ -52,6 +52,8 @@ The README documents the options and defaults; [threat-model.md](./threat-model.
 - Covered: `/email-otp/send-verification-otp`, `/email-otp/request-password-reset`, `/forget-password/email-otp`, `/phone-number/send-otp`, `/phone-number/request-password-reset`, `/request-password-reset`, `/send-verification-email`, `/sign-in/magic-link`.
 - Limits: 3 per 10 min and 10 per day, per recipient, across IPs.
 - Answers `429 SEND_LIMITED` whether or not the account exists. The event is `send.limited`, not `code.sent_limited`.
+- `/change-email` and `/email-otp/request-email-change` (`SIGNED_IN_SEND_PATHS`) count by `newEmail`, in a before hook after the policy, two-factor and step-up gates. They stay out of `OPEN_PATHS`, so a restricted session can't call them, and a refused request uses up no sends.
+- `/sign-up/email` counts by `email` only when Better Auth calls `onExistingUserSignUp` (`requireEmailVerification` or `autoSignIn: false`). Every attempt counts, taken address or not, so a 429 doesn't enumerate.
 
 ### 1.3 Password policy
 
@@ -61,12 +63,14 @@ The README documents the options and defaults; [threat-model.md](./threat-model.
   - the check covers every path that writes a password, including server calls.
 - Forced change works as drafted. The allowlist is every Better Auth sign-in, send, password, session and two-factor endpoint (`OPEN_PATHS`), plus `password.allow`.
 - An admin-set password records history but keeps the flag.
+- **Changed:** `/admin/set-user-password` skips the reuse check. Any distinct answer, even a generic one, would tell the admin whether a guess is one of the user's passwords; an admin can set any password anyway. The replaced hash still goes into history, so the user's next change is checked against it.
 
 ### 1.4 Required 2FA
 
 - As drafted, with `user.twoFactorDueAt` (a date) instead of a boolean, so the app can show the deadline.
 - Set once, the first time shield sees a covered user without 2FA; never restarted.
 - Past it: `403 TWO_FACTOR_SETUP_REQUIRED` outside `OPEN_PATHS`. `/two-factor/disable` is refused for covered users.
+- The gate decides on the stored user on `/two-factor/disable`, and on every covered request when `session.cookieCache` is on: a cached user can miss a new role or two-factor turned off. Secondary storage needs no read, as `updateUser` refreshes it.
 
 ### 1.5 Step-up
 
@@ -76,6 +80,8 @@ The README documents the options and defaults; [threat-model.md](./threat-model.
   - shield re-reads the stored session when a cached one isn't recent;
   - it re-sets the cookie on success.
 - `stepUp.paths` defaults to `STEP_UP_PATHS`. `shieldRequireStepUp` is the server helper for the app's own routes.
+- `/electron/transfer-user` is in `STEP_UP_PATHS`, like `/device/approve`: `/electron/token` swaps its code for a new session, which would count as a fresh sign-in.
+- With `allowPasswordless`, Better Auth enrolls a user who has no password without any check. For such a user shield requires a recent step-up on `/two-factor/enable`, `/two-factor/get-totp-uri` and a `/two-factor/verify-totp` against an unverified secret, outside `stepUp.paths`.
 - Attempts use a per-user counter with the strict rule. Better Auth doesn't cap verify attempts on a signed-in session, so this cap is new protection, not a duplicate.
 
 ### 1.6 Security event log

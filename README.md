@@ -87,6 +87,8 @@ shield({
 These are the defaults, counted per recipient across every IP:
 
 - covered: email OTP, phone OTP, password reset, verification email, magic link;
+- also covered, by the new address: `/change-email` and `/email-otp/request-email-change`. They stay blocked while a password change or two-factor setup is due, and a request shield refuses there uses up no sends;
+- also covered: `/sign-up/email` when `emailAndPassword.onExistingUserSignUp` is set and Better Auth calls it (`requireEmailVerification` on or `autoSignIn: false`). Every sign-up for the address counts, taken or not, so the limit doesn't reveal who has an account;
 - the request that reaches a limit is still sent;
 - later ones get `429 SEND_LIMITED` with `Retry-After`, whether or not the account exists;
 - add paths with `sendLimit.paths`; set `false` (or `short: false`) to turn limits off.
@@ -106,6 +108,8 @@ shield({
 `password: {}` turns on the defaults above. Adds a `passwordHistory` table (hashes only) and `user.passwordChangeRequired`.
 
 **Reuse.** Shield checks every endpoint that sets a password: `/change-password`, `/reset-password`, `/email-otp/reset-password`, `/phone-number/reset-password`, `/admin/set-user-password` and the server-side `setPassword`. A reused password gets `400 PASSWORD_REUSED`.
+
+`/admin/set-user-password` is the exception: it is never refused for reuse, since the refusal would tell the admin whether a guess is one of the user's passwords, and an admin can set any password anyway. The password it replaces still goes into history, so the user's own next change can't go back to it.
 
 The check runs only after Better Auth has accepted the reset token, the OTP or the current password. Without a valid one you can't learn whether a guess was an old password. A refused reset link stays usable, so the user can try another password.
 
@@ -167,12 +171,14 @@ shield({
 - `/link-social`, `/unlink-account`, `/passkey/generate-register-options`, `/passkey/verify-registration`;
 - `/two-factor/disable`, `/two-factor/generate-backup-codes`;
 - `/device/approve`, since an approved device gets a new session that would count as a fresh sign-in;
+- `/electron/transfer-user`, for the same reason: its code is swapped for a new session at `/electron/token`;
 - `/admin/impersonate-user`, `/admin/set-role`, `/admin/update-user`, `/admin/create-user`, `/admin/set-user-password`, `/admin/remove-user`;
 - `/api-key/create`.
 
 **How it works:**
 
 - These endpoints answer `403 STEP_UP_REQUIRED` unless the session signed in or stepped up within `maxAge`.
+- With `twoFactor({ allowPasswordless: true })`, Better Auth sets up two-factor without a password for a user who has none. For such a user, `/two-factor/enable`, `/two-factor/get-totp-uri` and a `/two-factor/verify-totp` that turns TOTP on also need a recent step-up, whatever `paths` says. A user who takes longer than `maxAge` to finish setting up signs in again.
 - Adds `session.stepUpAt`.
 - The user confirms with:
   - their password: `POST /shield/step-up { password }` (`authClient.shield.stepUp({ password })`);
@@ -240,7 +246,8 @@ Tests run against the memory adapter, SQLite (real SQL through Kysely) and secon
 - **Counters are separate per field.** Email and username count separately, even for one account.
 - **Secondary storage may log a few extra events.** Under heavy concurrency it can record slightly more failures than the limit before the lock; the lock itself holds.
 - **Some refused resets spend the code.** On a non-transactional store (Better Auth's memory adapter, MongoDB without transactions), an email-OTP or phone reset refused for reuse has already used up the code. The user asks for a new one. Reset links aren't affected.
-- **A cookie cache delays a newly set flag.** With `session.cookieCache` on, a flag set server-side (`passwordChangeRequired`, a new two-factor deadline) reaches an existing session within the cache's `maxAge`. Clearing a flag, a step-up and a two-factor setup are read from the database and take effect at once.
+- **A cookie cache delays a newly set flag.** With `session.cookieCache` on, a `passwordChangeRequired` flag set server-side reaches an existing session within the cache's `maxAge`. Clearing a flag, a step-up and a two-factor setup are read from the database and take effect at once.
+- **Required two-factor reads the user with a cookie cache on.** The cached user could miss a new role or two-factor turned off, so the gate reads the stored user on each request it covers (and always on `/two-factor/disable`): one extra user lookup per request.
 - **Gates only cover Better Auth's endpoints.** For your own routes, check `session.user.passwordChangeRequired` and `twoFactorDueAt`, or call `shieldRequireStepUp`.
 - **Gates cost a session lookup.** The forced-change, two-factor and step-up gates look up the session on each Better Auth request they cover (cached within a request).
 
