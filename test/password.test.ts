@@ -95,6 +95,13 @@ for (const backend of Object.keys(backends) as (keyof typeof backends)[]) {
       assert.deepEqual(await events(), ["password.reuse_blocked", "password.changed"]);
     });
 
+    it("checks a reset token sent in the query behind an empty body token", async () => {
+      const { auth, tokens } = await app(backend);
+      await post(auth, "/request-password-reset", { email: EMAIL });
+      const reused = await post(auth, `/reset-password?token=${tokens.at(-1)!}`, { token: "", newPassword: PASSWORD });
+      assert.equal(await codeOf(reused), "PASSWORD_REUSED");
+    });
+
     it("never says PASSWORD_REUSED to someone without a valid code or token", async () => {
       const { auth, events } = await app(backend);
       await post(auth, "/email-otp/request-password-reset", { email: EMAIL });

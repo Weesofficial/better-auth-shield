@@ -12,12 +12,22 @@ export const STEP_UP_FIELD = "stepUpAt";
 /** Better Auth endpoints that need a recent step-up unless `stepUp.paths` says otherwise. */
 export const STEP_UP_PATHS = [
   "/change-email",
+  "/email-otp/request-email-change",
+  "/email-otp/change-email",
   "/delete-user",
+  "/link-social",
   "/unlink-account",
+  "/passkey/generate-register-options",
+  "/passkey/verify-registration",
   "/two-factor/disable",
   "/two-factor/generate-backup-codes",
+  // Approving a device hands it a new session, which would count as a fresh sign-in.
+  "/device/approve",
   "/admin/impersonate-user",
   "/admin/set-role",
+  // Can set the role and email too.
+  "/admin/update-user",
+  "/admin/create-user",
   "/admin/set-user-password",
   "/admin/remove-user",
   "/api-key/create",
@@ -36,6 +46,9 @@ const VERIFY_PATHS: Record<string, string> = {
   "/two-factor/verify-otp": "otp",
   "/two-factor/verify-backup-code": "backup_code",
 };
+
+/** Other signed-in endpoints that check the password; their wrong guesses count toward the same lock. */
+const PASSWORD_CHECK_PATHS = new Set(["/change-password", "/two-factor/enable", "/two-factor/get-totp-uri", "/two-factor/disable", "/two-factor/generate-backup-codes", "/delete-user"]);
 
 type HookCtx = Parameters<Parameters<typeof createAuthMiddleware>[0]>[0];
 type Row = Session & Record<string, unknown>;
@@ -70,11 +83,14 @@ export function stepUp(
     return !!stored && provenAt(stored) >= since;
   }
 
-  async function succeed(ctx: HookCtx, session: { session: Session; user: { id: string } }, method: string) {
+  async function succeed(ctx: HookCtx, current: { session: Session; user: { id: string } }, method: string) {
+    // A first second-factor check turns two-factor on and replaces the session; stamp the new one.
+    const session = ctx.context.newSession ?? current;
     const userId = session.user.id;
     await deps.store().reset(keyOf(userId));
     const at = new Date();
     const updated = await ctx.context.internalAdapter.updateSession(session.session.token, { [STEP_UP_FIELD]: at });
+    if (!updated) return at;
     // Keep a cookie cache in step with the stored session.
     await setSessionCookie(ctx, { session: { ...session.session, ...updated, [STEP_UP_FIELD]: at } as Session, user: session.user as never });
     await emit(ctx.context, { type: "step_up.success", userId, identifierHash: null, metadata: { method } }, null, headersOf(ctx));
@@ -98,12 +114,13 @@ export function stepUp(
 
   const before: NonNullable<BetterAuthPlugin["hooks"]>["before"] = [
     {
-      matcher: (ctx) => !!ctx.path && (guarded.has(ctx.path) || ctx.path in VERIFY_PATHS),
+      matcher: (ctx) => !!ctx.path && (guarded.has(ctx.path) || ctx.path in VERIFY_PATHS || PASSWORD_CHECK_PATHS.has(ctx.path)),
       handler: createAuthMiddleware(async (ctx) => {
         const session = await getSessionFromCtx(ctx).catch(() => null);
         // No session: the endpoint refuses it, or it's a sign-in challenge Better Auth caps itself.
         if (!session) return;
-        if (ctx.path! in VERIFY_PATHS) return assertUnlocked(session.user.id);
+        if (ctx.path! in VERIFY_PATHS || PASSWORD_CHECK_PATHS.has(ctx.path!)) await assertUnlocked(session.user.id);
+        if (!guarded.has(ctx.path!)) return;
         if (!(await recent(ctx.context, session.session as Row, maxAge))) {
           throw new APIError("FORBIDDEN", ERROR_CODES.STEP_UP_REQUIRED);
         }
@@ -112,6 +129,15 @@ export function stepUp(
   ];
 
   const after: NonNullable<BetterAuthPlugin["hooks"]>["after"] = [
+    {
+      matcher: (ctx) => !!ctx.path && PASSWORD_CHECK_PATHS.has(ctx.path),
+      handler: createAuthMiddleware(async (ctx) => {
+        const returned = ctx.context.returned;
+        if (!(returned instanceof APIError) || returned.body?.code !== "INVALID_PASSWORD") return;
+        const session = await getSessionFromCtx(ctx).catch(() => null);
+        if (session) await fail(ctx, session.user.id, "password");
+      }),
+    },
     {
       matcher: (ctx) => !!ctx.path && ctx.path in VERIFY_PATHS,
       handler: createAuthMiddleware(async (ctx) => {

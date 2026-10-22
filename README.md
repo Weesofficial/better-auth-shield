@@ -161,9 +161,11 @@ shield({
 
 **Covered by default** (`STEP_UP_PATHS`):
 
-- `/change-email`, `/delete-user`, `/unlink-account`;
+- `/change-email`, `/email-otp/request-email-change`, `/email-otp/change-email`, `/delete-user`;
+- `/link-social`, `/unlink-account`, `/passkey/generate-register-options`, `/passkey/verify-registration`;
 - `/two-factor/disable`, `/two-factor/generate-backup-codes`;
-- `/admin/impersonate-user`, `/admin/set-role`, `/admin/set-user-password`, `/admin/remove-user`;
+- `/device/approve`, since an approved device gets a new session that would count as a fresh sign-in;
+- `/admin/impersonate-user`, `/admin/set-role`, `/admin/update-user`, `/admin/create-user`, `/admin/set-user-password`, `/admin/remove-user`;
 - `/api-key/create`.
 
 **How it works:**
@@ -173,7 +175,7 @@ shield({
 - The user confirms with:
   - their password: `POST /shield/step-up { password }` (`authClient.shield.stepUp({ password })`);
   - or a second factor: Better Auth's own `/two-factor/verify-totp`, `verify-otp` or `verify-backup-code` while signed in.
-- Wrong passwords and codes count toward a per-user lock (`429 ACCOUNT_LOCKED`) with the same rule as sign-in lockout. Better Auth caps second-factor guesses during sign-in but not on a signed-in session, so without this a stolen session could keep guessing.
+- Wrong passwords and codes count toward a per-user lock (`429 ACCOUNT_LOCKED`) with the same rule as sign-in lockout. So do wrong passwords on `/change-password`, `/two-factor/enable` and `/two-factor/get-totp-uri`, and those endpoints are refused while the lock lasts. Better Auth caps second-factor guesses during sign-in but not on a signed-in session, so without this a stolen session could keep guessing.
 - An account without a password gets `400 NO_PASSWORD` from `/shield/step-up`.
 
 For your own routes:

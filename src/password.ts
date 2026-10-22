@@ -150,7 +150,8 @@ export function passwordPolicy(options: PasswordOptions, emit: Emit) {
       // so checking here first tells them nothing.
       matcher: (ctx) => ctx.path === "/reset-password",
       handler: createAuthMiddleware(async (ctx) => {
-        const token = ctx.body?.token ?? ctx.query?.token;
+        // `||` like Better Auth: an empty body token falls back to the query one.
+        const token = ctx.body?.token || ctx.query?.token;
         const plain = ctx.body?.newPassword;
         if (typeof token !== "string" || typeof plain !== "string") return;
         const verification = await ctx.context.internalAdapter.findVerificationValue(`reset-password:${token}`);

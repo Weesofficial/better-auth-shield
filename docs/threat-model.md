@@ -93,6 +93,7 @@ Someone holding both the database and the auth secret can test guesses against t
 
 - **Secondary storage overshoot.** Under heavy concurrency, a few more failures than the limit may be logged before the lock. The lock still holds.
 - **Separate counters per field.** Email and username are counted separately, so one account gets two strict budgets. That is at most 10 guesses per window instead of 5.
+- **Email-change flooding.** A signed-in user can ask `/change-email` or `/email-otp/request-email-change` to mail any address, and send limits don't cover them yet: putting them on the send list would also open them during a forced password change.
 - **Spent reset codes.** On a store without transactions, an email-OTP or phone reset refused for reuse has already used up its code.
 - **Cookie cache delay.** With `session.cookieCache`, a newly set `passwordChangeRequired` flag or two-factor deadline reaches an existing session only when the cache refreshes. Step-ups and cleared flags apply at once.
 - **A stale deadline.** A user whose two-factor deadline passed while they weren't covered is blocked immediately if they become covered again later. They don't get a new grace period.

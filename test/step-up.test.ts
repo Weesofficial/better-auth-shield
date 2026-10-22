@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it, mock } from "node:test";
-import { twoFactor, username } from "better-auth/plugins";
+import { admin, emailOTP, twoFactor, username } from "better-auth/plugins";
 import { shield, type ShieldOptions } from "../src/index.js";
 import { EMAIL, PASSWORD, WRONG, cookiesOf, memoryStorage, post, setup } from "./helpers.js";
 
@@ -94,7 +94,64 @@ for (const backend of Object.keys(backends) as (keyof typeof backends)[]) {
       // Better Auth doesn't cap codes on a signed-in session; shield does.
       for (let i = 0; i < 5; i++) assert.equal((await verify(`wrong-${i}`)).status, 401);
       assert.equal((await verify(backupCodes[1]!)).status, 429);
-      assert.equal((await post(auth, "/two-factor/disable", { password: PASSWORD }, undefined, cookie)).status, 200);
+      // The lock covers every password check too, so a locked session can't keep guessing there.
+      assert.equal((await post(auth, "/two-factor/disable", { password: PASSWORD }, undefined, cookie)).status, 429);
+    });
+
+    it("keeps the session Better Auth rotates when a first second-factor check turns it on", async () => {
+      const codes: string[] = [];
+      const extra = backends[backend]();
+      const { auth } = await setup({
+        ...extra,
+        plugins: [
+          username(),
+          twoFactor({ otpOptions: { sendOTP: async ({ otp }) => void codes.push(otp) } }),
+          shield({ stepUp: {}, sendLimit: false }),
+        ],
+      });
+      const res = await post(auth, "/sign-up/email", { email: EMAIL, password: PASSWORD, name: "Ada", username: "ada_l" });
+      const cookie = cookiesOf(res);
+      assert.equal((await post(auth, "/two-factor/send-otp", {}, undefined, cookie)).status, 200);
+      const verified = await post(auth, "/two-factor/verify-otp", { code: codes.at(-1) }, undefined, cookie);
+      assert.equal(verified.status, 200);
+      // A browser keeps the last cookie of a name; it must be the new session, not the deleted one.
+      const last = verified.headers.getSetCookie().filter((c) => c.startsWith("better-auth.session_token=")).at(-1)!;
+      const session = await auth.api.getSession({ headers: new Headers({ cookie: last.split(";")[0]! }) });
+      assert.ok((session?.user as Record<string, unknown>).twoFactorEnabled);
+      assert.ok((session?.session as Record<string, unknown>).stepUpAt);
+    });
+
+    it("counts wrong passwords on other signed-in endpoints toward the lock", async () => {
+      const { auth, cookie, stepUp } = await app(backend);
+      for (let i = 0; i < 5; i++) {
+        const res = await post(auth, "/change-password", { currentPassword: `${WRONG}-${i}`, newPassword: "next-password-1" }, undefined, cookie);
+        assert.equal(res.status, 400);
+      }
+      assert.equal((await post(auth, "/change-password", { currentPassword: PASSWORD, newPassword: "next-password-1" }, undefined, cookie)).status, 429);
+      assert.equal((await post(auth, "/two-factor/enable", { password: PASSWORD }, undefined, cookie)).status, 429);
+      assert.equal((await stepUp(cookie, PASSWORD)).status, 429);
+    });
+
+    it("guards the admin endpoints that can set a role, and the email OTP email change", async () => {
+      mock.timers.enable({ apis: ["Date"], now: Date.now() });
+      const extra = backends[backend]();
+      const { auth } = await setup({
+        ...extra,
+        plugins: [username(), admin(), emailOTP({ sendVerificationOTP: async () => {}, changeEmail: { enabled: true } }), shield({ stepUp: {}, sendLimit: false })],
+      });
+      const res = await post(auth, "/sign-up/email", { email: EMAIL, password: PASSWORD, name: "Ada", username: "ada_l" });
+      const { user } = (await res.json()) as { user: { id: string } };
+      const { adapter } = await auth.$context;
+      await adapter.update({ model: "user", where: [{ field: "id", value: user.id }], update: { role: "admin" } });
+      const cookie = cookiesOf(await post(auth, "/sign-in/email", { email: EMAIL, password: PASSWORD }));
+      mock.timers.tick(6 * MINUTE);
+      const calls: [string, unknown][] = [
+        ["/admin/update-user", { userId: user.id, data: { role: "user" } }],
+        ["/admin/create-user", { email: "eve@example.com", password: PASSWORD, name: "Eve", role: "admin" }],
+        ["/email-otp/request-email-change", { newEmail: "eve@example.com" }],
+        ["/email-otp/change-email", { newEmail: "eve@example.com", otp: "000000" }],
+      ];
+      for (const [path, body] of calls) assert.equal(await codeOf(await post(auth, path, body, undefined, cookie)), "STEP_UP_REQUIRED", path);
     });
 
     it("guards your own routes through shieldRequireStepUp", async () => {
