@@ -5,7 +5,7 @@ import { EMAIL, PASSWORD, WRONG, setup, signIn, signUp } from "./helpers.js";
 
 describe("security events", () => {
   it("records failures, the lockout and a success, without storing the email", async () => {
-    const { auth, db } = setup({ options: { lockout: { maxAttempts: 2 } } });
+    const { auth, db } = await setup({ options: { lockout: { maxAttempts: 2 } } });
     const { user } = await signUp(auth);
     await signIn(auth, EMAIL, WRONG);
     await signIn(auth, EMAIL, WRONG);
@@ -25,7 +25,7 @@ describe("security events", () => {
 
   it("passes the identifier to onEvent and survives a throwing callback", async () => {
     const seen: (string | null)[] = [];
-    const { auth } = setup({
+    const { auth } = await setup({
       options: {
         events: {
           onEvent: (_event, { identifier }) => {
@@ -42,29 +42,32 @@ describe("security events", () => {
   });
 
   it("writes nothing when events are disabled", async () => {
-    const { auth, db } = setup({ options: { events: { enabled: false } } });
+    const { auth, db } = await setup({ options: { events: { enabled: false } } });
     await signUp(auth);
     await signIn(auth, EMAIL, WRONG);
     assert.equal(db.securityEvent!.length, 0);
   });
 
-  it("cleanup removes old events and idle counters only", async () => {
-    mock.timers.enable({ apis: ["Date"], now: Date.now() });
-    try {
-      const { auth, db } = setup();
-      await signUp(auth);
-      await signIn(auth, EMAIL, WRONG);
-      mock.timers.tick(91 * 24 * 60 * 60 * 1000);
-      await signIn(auth, "grace@example.com", WRONG);
-      const result = await auth.api.shieldCleanup();
-      // Each identifier has two counters: per IP and global.
-      assert.deepEqual(result, { events: 1, counters: 2 });
-      assert.equal(db.securityEvent!.length, 1);
-      assert.equal(db.shieldCounter!.length, 2);
-    } finally {
-      mock.timers.reset();
-    }
-  });
+  for (const database of ["memory", "sqlite"] as const) {
+    it(`cleanup removes old events and idle counters only (${database})`, async () => {
+      mock.timers.enable({ apis: ["Date"], now: Date.now() });
+      try {
+        const { auth } = await setup({ database });
+        await signUp(auth);
+        await signIn(auth, EMAIL, WRONG);
+        mock.timers.tick(91 * 24 * 60 * 60 * 1000);
+        await signIn(auth, "grace@example.com", WRONG);
+        const result = await auth.api.shieldCleanup();
+        // Each identifier has two counters: per IP and global.
+        assert.deepEqual(result, { events: 1, counters: 2 });
+        const { adapter } = await auth.$context;
+        assert.equal(await adapter.count({ model: "securityEvent" }), 1);
+        assert.equal(await adapter.count({ model: "shieldCounter" }), 2);
+      } finally {
+        mock.timers.reset();
+      }
+    });
+  }
 });
 
 describe("normalizeIdentifier", () => {

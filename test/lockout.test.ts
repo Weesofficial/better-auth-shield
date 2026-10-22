@@ -7,8 +7,9 @@ const fail = async (auth: Parameters<typeof signIn>[0], times: number, email = E
 };
 
 const backends = {
-  database: () => ({}),
-  "secondary-storage": () => ({ secondaryStorage: memoryStorage() }),
+  memory: () => ({}),
+  sqlite: () => ({ database: "sqlite" as const }),
+  "secondary-storage": () => ({ auth: { secondaryStorage: memoryStorage() } }),
 };
 
 for (const [backend, extra] of Object.entries(backends)) {
@@ -16,7 +17,7 @@ for (const [backend, extra] of Object.entries(backends)) {
     afterEach(() => mock.timers.reset());
 
     it("locks after 5 failures and refuses even the right password", async () => {
-      const { auth } = setup({ auth: extra() });
+      const { auth } = await setup(extra());
       await signUp(auth);
       for (let i = 0; i < 5; i++) assert.equal((await signIn(auth, EMAIL, WRONG)).status, 401);
       const res = await signIn(auth, EMAIL, PASSWORD);
@@ -26,7 +27,7 @@ for (const [backend, extra] of Object.entries(backends)) {
     });
 
     it("answers a locked unknown email exactly like a locked real one", async () => {
-      const { auth } = setup({ auth: extra() });
+      const { auth } = await setup(extra());
       await signUp(auth);
       await fail(auth, 5);
       await fail(auth, 5, "nobody@example.com");
@@ -38,21 +39,21 @@ for (const [backend, extra] of Object.entries(backends)) {
     });
 
     it("does not lock the owner out from another IP", async () => {
-      const { auth } = setup({ auth: extra() });
+      const { auth } = await setup(extra());
       await signUp(auth);
       await fail(auth, 5, EMAIL, "198.51.100.1");
       assert.equal((await signIn(auth, EMAIL, PASSWORD, "198.51.100.2")).status, 200);
     });
 
     it("locks across IPs on the global counter", async () => {
-      const { auth } = setup({ options: { lockout: { global: { maxAttempts: 6 } } }, auth: extra() });
+      const { auth } = await setup({ options: { lockout: { global: { maxAttempts: 6 } } }, ...extra() });
       await signUp(auth);
       for (let i = 0; i < 6; i++) await signIn(auth, EMAIL, WRONG, `198.51.100.${i}`);
       assert.equal((await signIn(auth, EMAIL, PASSWORD, "192.0.2.9")).status, 429);
     });
 
     it("resets the count after a successful sign-in", async () => {
-      const { auth } = setup({ auth: extra() });
+      const { auth } = await setup(extra());
       await signUp(auth);
       await fail(auth, 4);
       assert.equal((await signIn(auth, EMAIL, PASSWORD)).status, 200);
@@ -61,7 +62,7 @@ for (const [backend, extra] of Object.entries(backends)) {
     });
 
     it("counts case variants as one identifier", async () => {
-      const { auth } = setup({ auth: extra() });
+      const { auth } = await setup(extra());
       await signUp(auth);
       for (const email of ["ADA@example.com", "ada@EXAMPLE.com", "Ada@Example.Com", "ada@example.com", "aDA@example.COM"]) {
         await signIn(auth, email, WRONG);
@@ -71,7 +72,7 @@ for (const [backend, extra] of Object.entries(backends)) {
 
     it("unlocks after the lock time, then doubles the next lock", async () => {
       mock.timers.enable({ apis: ["Date"], now: Date.now() });
-      const { auth } = setup({ auth: extra() });
+      const { auth } = await setup(extra());
       await signUp(auth);
       await fail(auth, 5);
       assert.equal((await signIn(auth, EMAIL, PASSWORD)).status, 429);
@@ -86,7 +87,7 @@ for (const [backend, extra] of Object.entries(backends)) {
 
     it("forgets old failures once the window has passed", async () => {
       mock.timers.enable({ apis: ["Date"], now: Date.now() });
-      const { auth } = setup({ auth: extra() });
+      const { auth } = await setup(extra());
       await signUp(auth);
       await fail(auth, 4);
       mock.timers.tick(15 * 60 * 1000 + 1);
@@ -96,9 +97,9 @@ for (const [backend, extra] of Object.entries(backends)) {
 
     it("locks exactly once per counter under 50 parallel failures", async () => {
       const locks: unknown[] = [];
-      const { auth } = setup({
+      const { auth } = await setup({
         options: { events: { onEvent: (e) => void (e.type === "lockout" && locks.push(e.metadata?.scope)) } },
-        auth: extra(),
+        ...extra(),
       });
       await signUp(auth);
       // 50 is also the global limit, so a single lost increment would leave the global counter unlocked.
@@ -108,7 +109,7 @@ for (const [backend, extra] of Object.entries(backends)) {
     });
 
     it("lifts the lock with shieldUnlock", async () => {
-      const { auth } = setup({ auth: extra() });
+      const { auth } = await setup(extra());
       await signUp(auth);
       await fail(auth, 5);
       await auth.api.shieldUnlock({ body: { identifier: "ADA@example.com" } });
@@ -119,40 +120,40 @@ for (const [backend, extra] of Object.entries(backends)) {
 
 describe("lockout rules", () => {
   it("keeps shieldUnlock and shieldCleanup off the HTTP router", async () => {
-    const { auth } = setup();
+    const { auth } = await setup();
     assert.equal((await post(auth, "/shield/unlock", { identifier: EMAIL })).status, 404);
     assert.equal((await post(auth, "/shield/cleanup", {})).status, 404);
   });
 
   it("does not count a correct password for an unverified email", async () => {
-    const { auth } = setup({ auth: { emailAndPassword: { enabled: true, requireEmailVerification: true } } });
+    const { auth } = await setup({ auth: { emailAndPassword: { enabled: true, requireEmailVerification: true } } });
     await signUp(auth);
     for (let i = 0; i < 6; i++) assert.equal((await signIn(auth, EMAIL, PASSWORD)).status, 403);
   });
 
   it("does not count requests with an invalid body", async () => {
-    const { auth } = setup();
+    const { auth } = await setup();
     await signUp(auth);
     for (let i = 0; i < 6; i++) await post(auth, "/sign-in/email", { email: EMAIL });
     assert.equal((await signIn(auth, EMAIL, PASSWORD)).status, 200);
   });
 
   it("watches /sign-in/username", async () => {
-    const { auth } = setup();
+    const { auth } = await setup();
     await signUp(auth);
     for (let i = 0; i < 5; i++) await post(auth, "/sign-in/username", { username: "ADA_L", password: WRONG });
     assert.equal((await post(auth, "/sign-in/username", { username: "ada_l", password: PASSWORD })).status, 429);
   });
 
   it("can be turned off", async () => {
-    const { auth } = setup({ options: { lockout: false } });
+    const { auth } = await setup({ options: { lockout: false } });
     await signUp(auth);
     await fail(auth, 10);
     assert.equal((await signIn(auth, EMAIL, PASSWORD)).status, 200);
   });
 
   it("rejects invalid options at startup", async () => {
-    assert.throws(() => setup({ options: { lockout: { maxAttempts: 0 } } }), /lockout.maxAttempts/);
-    await assert.rejects(setup({ options: { storage: "secondary-storage" } }).auth.$context, /secondaryStorage/);
+    await assert.rejects(setup({ options: { lockout: { maxAttempts: 0 } } }), /lockout.maxAttempts/);
+    await assert.rejects((await setup({ options: { storage: "secondary-storage" } })).auth.$context, /secondaryStorage/);
   });
 });

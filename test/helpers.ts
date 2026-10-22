@@ -1,5 +1,7 @@
 import { betterAuth, type BetterAuthOptions, type BetterAuthPlugin, type SecondaryStorage } from "better-auth";
 import { memoryAdapter } from "better-auth/adapters/memory";
+import { getMigrations } from "better-auth/db/migration";
+import { DatabaseSync } from "node:sqlite";
 import { username } from "better-auth/plugins";
 import { shield, type ShieldOptions } from "../src/index.js";
 
@@ -7,15 +9,20 @@ export const PASSWORD = "correct-horse-battery";
 export const WRONG = "wrong-password-123";
 export const EMAIL = "ada@example.com";
 
-/** A real Better Auth instance with `username()` and `shield()` over the memory adapter. */
-export function setup({
+/**
+ * A real Better Auth instance with `username()` and `shield()`, over the memory
+ * adapter or a migrated in-memory SQLite database (Kysely, real SQL).
+ */
+export async function setup({
   options = {},
   auth: authOverrides = {},
   plugins,
+  database = "memory",
 }: {
   options?: ShieldOptions;
   auth?: Partial<BetterAuthOptions>;
   plugins?: BetterAuthPlugin[];
+  database?: "memory" | "sqlite";
 } = {}) {
   const db: Record<string, Record<string, unknown>[]> = {
     user: [],
@@ -25,21 +32,22 @@ export function setup({
     shieldCounter: [],
     securityEvent: [],
   };
-  const auth = betterAuth({
+  const config = {
     secret: "test-secret-0123456789-abcdefghijklmnop",
     baseURL: "http://localhost:3000",
-    database: memoryAdapter(db),
+    database: database === "sqlite" ? new DatabaseSync(":memory:") : memoryAdapter(db),
     emailAndPassword: { enabled: true },
     rateLimit: { enabled: false },
     advanced: { ipAddress: { ipAddressHeaders: ["x-forwarded-for"] } },
     logger: { disabled: true },
     plugins: plugins ?? [username(), shield(options)],
     ...authOverrides,
-  });
-  return { auth, db };
+  } satisfies BetterAuthOptions;
+  if (database === "sqlite") await (await getMigrations(config)).runMigrations();
+  return { auth: betterAuth(config), db };
 }
 
-type Auth = ReturnType<typeof setup>["auth"];
+type Auth = Awaited<ReturnType<typeof setup>>["auth"];
 
 export async function signUp(auth: Auth, email = EMAIL, name = "ada_l") {
   return auth.api.signUpEmail({ body: { email, password: PASSWORD, name: "Ada", username: name } as never });
