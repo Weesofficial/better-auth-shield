@@ -5,6 +5,7 @@ import { COUNTER_MODEL, databaseStore, secondaryStore, type CounterStore, type L
 import { ERROR_CODES } from "./error-codes.js";
 import {
   FAILURE_CODES,
+  SEND_PATHS,
   SIGN_IN_PATHS,
   TWO_FACTOR_FAILURE_CODES,
   TWO_FACTOR_PATHS,
@@ -15,6 +16,7 @@ import {
 export { ERROR_CODES } from "./error-codes.js";
 export type { ShieldErrorCode } from "./error-codes.js";
 export type { LockRule } from "./counter.js";
+export { SEND_PATHS, SIGN_IN_PATHS } from "./identifier.js";
 export { hashIdentifier, normalizeIdentifier } from "./identifier.js";
 
 export const EVENT_MODEL = "securityEvent";
@@ -25,7 +27,8 @@ export type SecurityEventType =
   | "lockout"
   | "unlock"
   | "two_factor.success"
-  | "two_factor.failure";
+  | "two_factor.failure"
+  | "send.limited";
 
 export interface SecurityEvent {
   type: SecurityEventType;
@@ -62,6 +65,24 @@ export interface ShieldOptions {
         paths?: Record<string, string>;
       });
   /**
+   * Cap the codes and links sent to one email or phone number (email OTP,
+   * phone OTP, password reset, verification email, magic link), across every
+   * IP. Stops inbox flooding and SMS pumping, which the IP rate limiter can't.
+   * Defaults to 3 per 10 minutes and 10 per day. `false` turns it off.
+   *
+   * The request that reaches a limit is still sent; later ones get a 429
+   * `SEND_LIMITED` with `Retry-After` until the window has passed, whether or
+   * not the account exists.
+   */
+  sendLimit?:
+    | false
+    | {
+        short?: false | Partial<SendRule>;
+        daily?: false | Partial<SendRule>;
+        /** Extra sending endpoints to watch, as `{ path: bodyField }`. */
+        paths?: Record<string, string>;
+      };
+  /**
    * Where counters live. Defaults to `"secondary-storage"` when Better Auth has
    * a `secondaryStorage` with `increment`, otherwise `"database"` (the
    * `shieldCounter` table).
@@ -81,9 +102,18 @@ export interface ShieldOptions {
   };
 }
 
+export interface SendRule {
+  /** Sends allowed per window. */
+  max: number;
+  /** Window in seconds; once the limit is hit, sending stops this long. */
+  window: number;
+}
+
 const DAY = 24 * 60 * 60;
 const STRICT: LockRule = { maxAttempts: 5, window: 15 * 60, duration: 15 * 60, maxDuration: DAY };
 const GLOBAL: LockRule = { maxAttempts: 50, window: 60 * 60, duration: 15 * 60, maxDuration: DAY };
+const SEND_SHORT: SendRule = { max: 3, window: 10 * 60 };
+const SEND_DAILY: SendRule = { max: 10, window: DAY };
 const NO_IP = "no-ip";
 
 function checkRule(name: string, rule: LockRule) {
@@ -95,9 +125,13 @@ function checkRule(name: string, rule: LockRule) {
   return rule;
 }
 
-const lockedError = (until: number) => {
+/** A send limit is a lock that lasts one window and never escalates. */
+const sendRule = (name: string, rule: SendRule): LockRule =>
+  checkRule(name, { maxAttempts: rule.max, window: rule.window, duration: rule.window, maxDuration: rule.window });
+
+const tooMany = (error: (typeof ERROR_CODES)[keyof typeof ERROR_CODES], until: number) => {
   const retryAfter = Math.max(1, Math.ceil((until - Date.now()) / 1000));
-  return new APIError("TOO_MANY_REQUESTS", { ...ERROR_CODES.ACCOUNT_LOCKED, retryAfter }, { "Retry-After": String(retryAfter) });
+  return new APIError("TOO_MANY_REQUESTS", { ...error, retryAfter }, { "Retry-After": String(retryAfter) });
 };
 
 /**
@@ -110,6 +144,22 @@ export const shield = (options: ShieldOptions = {}) => {
   const strict = checkRule("lockout", { ...STRICT, ...strictOption });
   const global = globalOption === false ? null : checkRule("lockout.global", { ...GLOBAL, ...globalOption });
   const paths: Record<string, string> = { ...SIGN_IN_PATHS, ...extraPaths };
+  const send = options.sendLimit === false ? null : (options.sendLimit ?? {});
+  const sendRules = send
+    ? (
+        [
+          ["short", send.short, SEND_SHORT],
+          ["daily", send.daily, SEND_DAILY],
+        ] as const
+      ).flatMap(([scope, option, base]) =>
+        option === false ? [] : [{ scope, rule: sendRule(`sendLimit.${scope}`, { ...base, ...option }) }],
+      )
+    : [];
+  const sendPaths: Record<string, string> = send ? { ...SEND_PATHS, ...send.paths } : {};
+  /** The longest any counter or lock can matter, in seconds. */
+  const longest = Math.max(
+    ...[strict, global, ...sendRules.map((s) => s.rule)].flatMap((rule) => (rule ? [rule.window, rule.maxDuration] : [])),
+  );
   const eventsEnabled = options.events?.enabled !== false;
   const retentionDays = options.events?.retentionDays ?? 90;
 
@@ -162,7 +212,7 @@ export const shield = (options: ShieldOptions = {}) => {
             "better-auth-shield: storage \"secondary-storage\" needs a Better Auth `secondaryStorage` with an atomic `increment`.",
           );
         }
-        store = secondaryStore(ctx.options.secondaryStorage, Math.max(strict.maxDuration, global?.maxDuration ?? 0));
+        store = secondaryStore(ctx.options.secondaryStorage, longest);
       } else {
         store = databaseStore(ctx);
       }
@@ -175,7 +225,31 @@ export const shield = (options: ShieldOptions = {}) => {
             const t = await target(ctx);
             if (!t) return;
             const until = Math.max(await store.lockedUntil(t.strictKey), global ? await store.lockedUntil(t.hash) : 0);
-            if (until) throw lockedError(until);
+            if (until) throw tooMany(ERROR_CODES.ACCOUNT_LOCKED, until);
+          }),
+        },
+        {
+          matcher: (ctx) => !!ctx.path && ctx.path in sendPaths && sendRules.length > 0,
+          handler: createAuthMiddleware(async (ctx) => {
+            const field = sendPaths[ctx.path!]!;
+            const identifier = normalizeIdentifier(field, (ctx.body as Record<string, unknown> | undefined)?.[field]);
+            if (!identifier) return;
+            const hash = await hashIdentifier(ctx.context.secret, identifier);
+            const headers = ctx.request?.headers ?? ctx.headers;
+            // A refused request counts toward no window, so waiting out the short one is enough.
+            const keys = sendRules.map(({ scope }) => `${hash}:send-${scope}`);
+            const until = Math.max(...(await Promise.all(keys.map((key) => store.lockedUntil(key)))));
+            if (until) throw tooMany(ERROR_CODES.SEND_LIMITED, until);
+            // Counted before sending, so concurrent requests can't all slip under the limit.
+            for (const { scope, rule } of sendRules) {
+              const result = await store.fail(`${hash}:send-${scope}`, rule);
+              if (result.justLocked) {
+                const metadata = { path: ctx.path, scope, until: new Date(result.lockedUntil).toISOString() };
+                await emit(ctx.context, { type: "send.limited", identifierHash: hash, metadata }, identifier, headers);
+              } else if (result.lockedUntil) {
+                throw tooMany(ERROR_CODES.SEND_LIMITED, result.lockedUntil);
+              }
+            }
           }),
         },
       ],
@@ -294,12 +368,12 @@ export const shield = (options: ShieldOptions = {}) => {
           model: EVENT_MODEL,
           where: [{ field: "createdAt", operator: "lt", value: new Date(now - retentionDays * DAY * 1000) }],
         });
-        const longest = Math.max(strict.window, strict.maxDuration, global?.window ?? 0, global?.maxDuration ?? 0) * 1000;
+        const idle = now - longest * 1000;
         const counters = await ctx.context.adapter.deleteMany({
           model: COUNTER_MODEL,
           where: [
-            { field: "windowStart", operator: "lt", value: now - longest },
-            { field: "lockedUntil", operator: "lt", value: now - longest },
+            { field: "windowStart", operator: "lt", value: idle },
+            { field: "lockedUntil", operator: "lt", value: idle },
           ],
         });
         return ctx.json({ events, counters });

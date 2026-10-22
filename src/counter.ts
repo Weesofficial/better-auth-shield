@@ -12,7 +12,10 @@ export interface LockRule {
 }
 
 export interface FailResult {
-  /** Locked until this time (ms), or 0. */
+  /**
+   * Locked until this time (ms), or 0. Set without `justLocked` when the key
+   * was already locked, so this attempt was over the limit and not counted.
+   */
   lockedUntil: number;
   /** True for the one failure that created the lock. */
   justLocked: boolean;
@@ -174,7 +177,11 @@ export function secondaryStore(storage: SecondaryStorage, maxLockSeconds: number
       const current = await lockedUntil(key);
       if (current) return { lockedUntil: current, justLocked: false };
       const count = await storage.increment(n(key), rule.window);
-      if (count !== rule.maxAttempts) return { lockedUntil: 0, justLocked: false };
+      if (count < rule.maxAttempts) return { lockedUntil: 0, justLocked: false };
+      // Raced past the check while another request was creating the lock.
+      if (count > rule.maxAttempts) {
+        return { lockedUntil: (await lockedUntil(key)) || Date.now() + rule.duration * 1000, justLocked: false };
+      }
       const now = Date.now();
       const lvl = (await storage.increment(level(key), rule.maxDuration)) - 1;
       const until = lockEnd(now, rule, lvl);

@@ -20,6 +20,18 @@ export const FAILURE_CODES = new Set([
   "TOO_MANY_ATTEMPTS",
 ]);
 
+/** Endpoints that email or text a code or link, mapped to the body field naming the recipient. */
+export const SEND_PATHS: Record<string, string> = {
+  "/email-otp/send-verification-otp": "email",
+  "/email-otp/request-password-reset": "email",
+  "/forget-password/email-otp": "email",
+  "/phone-number/send-otp": "phoneNumber",
+  "/phone-number/request-password-reset": "phoneNumber",
+  "/request-password-reset": "email",
+  "/send-verification-email": "email",
+  "/sign-in/magic-link": "email",
+};
+
 /**
  * Second-factor endpoints of the `twoFactor` plugin and the codes of a wrong
  * code. Better Auth locks the account itself after repeated failures
