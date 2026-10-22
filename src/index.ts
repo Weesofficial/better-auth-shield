@@ -391,24 +391,35 @@ export const shield = (options: ShieldOptions = {}) => {
     },
     endpoints: {
       ...stepUpEndpoints(() => stepper),
-      /** Server only: lift every lock on an identifier, e.g. from your support tooling. */
+      /**
+       * Server only: lift every lock on an identifier, e.g. from your support
+       * tooling. With `userId`, also lifts the user's step-up lock.
+       */
       shieldUnlock: createAuthEndpoint(
         "/shield/unlock",
         {
           method: "POST",
-          body: z.object({ identifier: z.string().min(1).max(320) }),
+          body: z
+            .object({ identifier: z.string().min(1).max(320).optional(), userId: z.string().min(1).max(255).optional() })
+            .refine((b) => b.identifier || b.userId, "Pass `identifier`, `userId` or both."),
           metadata: { SERVER_ONLY: true },
         },
         async (ctx) => {
+          const headers = ctx.request?.headers ?? ctx.headers;
           const raw = ctx.body.identifier;
           // A phone number may have been typed with separators the sign-in form stripped.
-          const forms = new Set([normalizeIdentifier("email", raw)]);
-          if (/^[+\d\s().-]+$/.test(raw)) forms.add(normalizeIdentifier("phoneNumber", raw));
+          const forms = new Set(raw ? [normalizeIdentifier("email", raw)] : []);
+          if (raw && /^[+\d\s().-]+$/.test(raw)) forms.add(normalizeIdentifier("phoneNumber", raw));
           for (const identifier of forms) {
             if (!identifier) continue;
             const hash = await hashIdentifier(ctx.context.secret, identifier);
             await store.unlock(hash);
-            await emit(ctx.context, { type: "unlock", identifierHash: hash, metadata: null }, identifier, ctx.request?.headers ?? ctx.headers);
+            await emit(ctx.context, { type: "unlock", identifierHash: hash, metadata: null }, identifier, headers);
+          }
+          if (ctx.body.userId) {
+            // Step-up counters are keyed `${userId}:step-up`.
+            await store.unlock(ctx.body.userId);
+            await emit(ctx.context, { type: "unlock", userId: ctx.body.userId, identifierHash: null, metadata: { scope: "step_up" } }, null, headers);
           }
           return ctx.json({ success: true });
         },

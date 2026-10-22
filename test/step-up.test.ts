@@ -78,6 +78,19 @@ for (const backend of Object.keys(backends) as (keyof typeof backends)[]) {
       assert.equal(lock?.[1].scope, "step_up");
     });
 
+    it("lifts a step-up lock through shieldUnlock with the user id", async () => {
+      const { auth, cookie, stepUp } = await app(backend);
+      for (let i = 0; i < 5; i++) await stepUp(cookie, WRONG);
+      assert.equal((await stepUp(cookie, PASSWORD)).status, 429);
+      // An identifier alone doesn't touch the step-up lock.
+      await auth.api.shieldUnlock({ body: { identifier: EMAIL } });
+      assert.equal((await stepUp(cookie, PASSWORD)).status, 429);
+      const session = await auth.api.getSession({ headers: new Headers({ cookie }) });
+      await auth.api.shieldUnlock({ body: { userId: session!.user.id } });
+      assert.equal((await stepUp(cookie, PASSWORD)).status, 200);
+      await assert.rejects(auth.api.shieldUnlock({ body: {} }));
+    });
+
     it("steps up with a second factor, whose guesses count toward the lock", async () => {
       mock.timers.enable({ apis: ["Date"], now: Date.now() });
       const { auth, cookie: first } = await app(backend, {});

@@ -67,6 +67,8 @@ To unlock an account from your support tooling:
 
 ```ts
 await auth.api.shieldUnlock({ body: { identifier: "ada@example.com" } });
+// Also lift the step-up lock of a signed-in user:
+await auth.api.shieldUnlock({ body: { identifier: "ada@example.com", userId: user.id } });
 ```
 
 Better Auth's `twoFactor` plugin already locks an account after repeated wrong codes during sign-in. Shield doesn't add a second counter there; it records those failures and locks as events.
