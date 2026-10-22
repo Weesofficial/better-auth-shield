@@ -27,6 +27,18 @@ export const ERROR_CODES = {
     code: "TWO_FACTOR_REQUIRED",
     message: "Two-factor authentication is required for this account.",
   },
+  STEP_UP_REQUIRED: {
+    code: "STEP_UP_REQUIRED",
+    message: "Confirm it's you to continue.",
+  },
+  INVALID_PASSWORD: {
+    code: "INVALID_PASSWORD",
+    message: "Invalid password.",
+  },
+  NO_PASSWORD: {
+    code: "NO_PASSWORD",
+    message: "This account has no password. Confirm with a second factor instead.",
+  },
 } as const;
 
 export type ShieldErrorCode = keyof typeof ERROR_CODES;

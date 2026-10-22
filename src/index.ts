@@ -14,6 +14,7 @@ import {
 } from "./identifier.js";
 import { passwordPolicy, type PasswordOptions } from "./password.js";
 import { requiredTwoFactor, type RequiredTwoFactorOptions } from "./required-two-factor.js";
+import { stepUp, stepUpEndpoints, type StepUpOptions } from "./step-up.js";
 
 export { ERROR_CODES } from "./error-codes.js";
 export type { ShieldErrorCode } from "./error-codes.js";
@@ -24,6 +25,8 @@ export { CHANGE_FIELD, HISTORY_MODEL } from "./password.js";
 export type { PasswordOptions } from "./password.js";
 export { DUE_FIELD } from "./required-two-factor.js";
 export type { RequiredTwoFactorOptions } from "./required-two-factor.js";
+export { STEP_UP_FIELD, STEP_UP_PATHS } from "./step-up.js";
+export type { StepUpOptions } from "./step-up.js";
 
 export const EVENT_MODEL = "securityEvent";
 
@@ -35,6 +38,8 @@ export type SecurityEventType =
   | "two_factor.success"
   | "two_factor.failure"
   | "two_factor.setup_required"
+  | "step_up.success"
+  | "step_up.failure"
   | "send.limited"
   | "password.changed"
   | "password.reuse_blocked"
@@ -52,7 +57,8 @@ export interface SecurityEvent {
    * of a second-factor failure, and `twoFactorPending` when a correct password
    * still awaits the second factor), lock scope and end for lockouts, `reason`
    * (`max_age` or `manual`) for a required password change, `dueAt` for a
-   * two-factor deadline.
+   * two-factor deadline, `method` (`password`, `totp`, `otp`, `backup_code`)
+   * for a step-up.
    */
   metadata: Record<string, unknown> | null;
   createdAt: Date;
@@ -113,6 +119,14 @@ export interface ShieldOptions {
    * Auth's `twoFactor()` plugin. Adds `user.twoFactorDueAt`.
    */
   twoFactor?: RequiredTwoFactorOptions;
+  /**
+   * Ask for the password or a second factor again before sensitive actions
+   * (`STEP_UP_PATHS` by default: change email, delete user, turn off
+   * two-factor, admin role and password changes, ...). Signing in counts as a
+   * step-up. Adds `session.stepUpAt`. Failed attempts lock per user like
+   * sign-ins do.
+   */
+  stepUp?: StepUpOptions;
   /** The `securityEvent` table. `false` stops writing it; `onEvent` still runs. */
   events?: {
     enabled?: boolean;
@@ -191,6 +205,9 @@ export const shield = (options: ShieldOptions = {}) => {
   let store: CounterStore;
   const policy = options.password ? passwordPolicy(options.password, emit) : null;
   const mandatory = options.twoFactor ? requiredTwoFactor(options.twoFactor, emit) : null;
+  const stepper = options.stepUp
+    ? stepUp(options.stepUp, { emit, store: () => store, rule: strict, tooMany: (until) => tooMany(ERROR_CODES.ACCOUNT_LOCKED, until) })
+    : null;
 
   async function emit(
     ctx: AuthContext,
@@ -283,6 +300,7 @@ export const shield = (options: ShieldOptions = {}) => {
         },
         ...(policy?.before ?? []),
         ...(mandatory?.before ?? []),
+        ...(stepper?.before ?? []),
       ],
       after: [
         {
@@ -368,9 +386,11 @@ export const shield = (options: ShieldOptions = {}) => {
         },
         ...(policy?.after ?? []),
         ...(mandatory?.after ?? []),
+        ...(stepper?.after ?? []),
       ],
     },
     endpoints: {
+      ...stepUpEndpoints(() => stepper),
       /** Server only: lift every lock on an identifier, e.g. from your support tooling. */
       shieldUnlock: createAuthEndpoint(
         "/shield/unlock",
@@ -434,6 +454,7 @@ export const shield = (options: ShieldOptions = {}) => {
     schema: {
       ...policy?.schema,
       user: { fields: { ...policy?.schema.user.fields, ...mandatory?.fields } },
+      session: { fields: { ...stepper?.fields } },
       [COUNTER_MODEL]: {
         fields: {
           key: { type: "string", unique: true, required: true },
