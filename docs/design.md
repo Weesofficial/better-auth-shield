@@ -1,13 +1,13 @@
 # better-auth-shield + better-auth-console: design
 
-Status: draft for review (2026-10-23). Nothing is built yet.
+Status: shield built on `main` (2026-10-23), not released. Console not started.
 
 Two packages, built in this order:
 
 1. **better-auth-shield**: a Better Auth plugin for the account-security features that Better Auth leaves to the app (lockout, password policy, required 2FA, step-up), plus one security event log.
 2. **better-auth-console**: an admin console that runs inside your own app and reads your own database. The shield event log is its main data source.
 
-Target: Better Auth `>=1.6 <2` (source checked against 1.7.12). Adapters: Postgres, MySQL, SQLite, MongoDB. MIT.
+Target: Better Auth `>=1.7 <2` (source checked against 1.7.12). Adapters: Postgres, MySQL, SQLite, MongoDB. MIT.
 
 ## Why
 
@@ -30,89 +30,78 @@ Target: Better Auth `>=1.6 <2` (source checked against 1.7.12). Adapters: Postgr
 
 ---
 
-## Part 1: better-auth-shield
+## Part 1: better-auth-shield (built)
+
+The README documents the options and defaults; [threat-model.md](./threat-model.md) covers what shield stops and what it doesn't. This part records the decisions and where they differ from the first draft.
 
 ### 1.1 Account lockout (per identifier)
 
-Counts failed attempts per **normalized identifier**, not per IP.
+- Watched: `/sign-in/email`, `/sign-in/username`, `/sign-in/phone-number`, `/sign-in/email-otp`, `/sign-in/identifier`, plus `lockout.paths`.
+- Identifier from the body, trimmed and lowercased, keyed by an HMAC.
+- Two counters, as drafted:
+  - **strict**: identifier + IP, 5 in 15 min, lock 15 min doubling to 1 day;
+  - **global**: identifier alone, 50 an hour.
+- A lock is checked in a before hook, so a locked request never reaches the password check and costs no hash. Known and unknown identifiers get the same `429`.
+- Only wrong-secret codes count as failures.
+- **Dropped:** the trusted-device bypass. Better Auth's trust cookie only skips the second factor, so it can't vouch for a password guess.
+- **Changed:** `/two-factor/verify-*` during sign-in is left to Better Auth's own lockout. Shield logs those failures and locks as events, without a second counter.
+- Storage: `shieldCounter` table, one atomic `incrementOne` per write, or `secondaryStorage.increment` when present.
 
-- Watched endpoints: `/sign-in/email`, `/sign-in/username`, `/sign-in/phone-number`, `/sign-in/identifier`, `/sign-in/email-otp`, `/two-factor/verify-*`, plus a `paths` option for custom ones.
-- Identifier taken from the body (`email`, `username`, `phoneNumber`, `identifier`), trimmed and lowercased; usernames use the `username` plugin's normalization.
-- Policy (defaults): 5 failures in 15 min → locked 15 min; each further lock doubles, capped at 24 h. Success resets the counter.
-- **No enumeration:** the counter runs for every identifier, existing or not, and a lock answers `429 ACCOUNT_LOCKED` with `Retry-After` for both. Never "user not found".
-- **Lockout as DoS:** anyone who knows your email can lock you out. Two counters:
-  - `identifier + IP`: strict (the defaults above)
-  - `identifier` alone: a much higher limit (default 50 per hour) that only catches distributed attacks
-  
-  Both thresholds are options. A successful sign-in from a device with a valid `trust_device` / passkey can bypass the global lock (option, default on).
-- Unlock: automatic on expiry, `auth.api.shieldUnlock({ identifier })` (server only), and in the console.
-- Storage: `secondaryStorage` (Redis) when it has atomic `increment`, otherwise a `shieldAttempt` table updated with one atomic upsert. Counters are not read and then written separately: no race windows.
+### 1.2 Send limits
 
-### 1.2 Per-identifier limits on codes and links
-
-Same counter engine, separate buckets, for endpoints that **send** something:
-`/email-otp/send-verification-otp`, `/phone-number/send-otp`, `/forget-password` (`/request-password-reset`), `/sign-in/magic-link`.
-Default 3 sends per identifier per 10 min, 10 per day. Stops SMS-pumping and inbox flooding, which the IP limiter can't.
-
-Upstream: send a PR adding a `key` function to `rateLimit.customRules` so this can also live in core. Shield keeps working either way.
+- Covered: `/email-otp/send-verification-otp`, `/email-otp/request-password-reset`, `/forget-password/email-otp`, `/phone-number/send-otp`, `/phone-number/request-password-reset`, `/request-password-reset`, `/send-verification-email`, `/sign-in/magic-link`.
+- Limits: 3 per 10 min and 10 per day, per recipient, across IPs.
+- Answers `429 SEND_LIMITED` whether or not the account exists. The event is `send.limited`, not `code.sent_limited`.
 
 ### 1.3 Password policy
 
-```ts
-shield({
-  password: {
-    minLength: 12,
-    history: 5,                 // last 5 hashes can't be reused
-    maxAgeDays: 0,              // 0 = no expiry (NIST 800-63B advises against forced rotation)
-    rejectBreached: false,      // leave to the haveIBeenPwned plugin; documented together
-  },
-})
-```
-
-- History check on `/change-password`, `/reset-password`, `/set-password` and the admin plugin's `set-user-password`: the plaintext is compared to stored hashes with `ctx.context.password.verify`, in a before hook, before Better Auth writes anything.
-- Table `passwordHistory` (`userId`, `hash`, `createdAt`), trimmed to the last N.
-- **Forced change:** `user.passwordChangeRequired` (set by admin, by `maxAgeDays`, or by our API). Sessions of such a user are limited to an allowlist (`/change-password`, `/sign-out`, `/get-session`, 2FA verify); anything else gets `403 PASSWORD_CHANGE_REQUIRED`. `getSession` exposes the flag so the app can redirect.
+- **Dropped:** `minLength`, which Better Auth's `minPasswordLength` already covers. `rejectBreached` is left to `haveIBeenPwned`.
+- **Changed:** the reuse check runs in a database hook (`account.update` / `account.create`), not a before hook on the endpoint:
+  - Better Auth has accepted the token, OTP or current password by then, so a reset link can't be used to test old passwords;
+  - the check covers every path that writes a password, including server calls.
+- Forced change works as drafted. The allowlist is every Better Auth sign-in, send, password, session and two-factor endpoint (`OPEN_PATHS`), plus `password.allow`.
+- An admin-set password records history but keeps the flag.
 
 ### 1.4 Required 2FA
 
-```ts
-shield({ twoFactor: { required: (user) => user.role === "admin", graceDays: 7 } })
-```
+- As drafted, with `user.twoFactorDueAt` (a date) instead of a boolean, so the app can show the deadline.
+- Set once, the first time shield sees a covered user without 2FA; never restarted.
+- Past it: `403 TWO_FACTOR_SETUP_REQUIRED` outside `OPEN_PATHS`. `/two-factor/disable` is refused for covered users.
 
-- Needs the `twoFactor` plugin; startup fails with a clear message without it.
-- Within the grace period the session works and carries `twoFactorSetupRequired: true`. After it, the session is limited to 2FA enrollment endpoints (`403 TWO_FACTOR_SETUP_REQUIRED`).
-- `/two-factor/disable` is refused for users the policy covers.
+### 1.5 Step-up
 
-### 1.5 Step-up authentication
-
-- `POST /shield/step-up` with a TOTP, an OTP, a backup code, or the password (option). On success it stamps `session.stepUpAt`.
-- Server helper `requireStepUp(headers, { maxAge: 300 })`: reads the session with `disableCookieCache`, throws `403 STEP_UP_REQUIRED`.
-- Option `stepUp.paths` applies it to Better Auth's own sensitive routes (`/change-email`, `/delete-user`, `/two-factor/disable`, admin routes).
-- Attempts go through the 1.1 counters.
+- **Changed:** `/shield/step-up` takes the password only. Second factors use Better Auth's own `/two-factor/verify-*` on a signed-in session, and shield stamps `session.stepUpAt` after a success. No code-checking is reimplemented.
+- A new sign-in counts as a step-up: the proof time is `max(stepUpAt, session.createdAt)`.
+- **Changed:** Instead of `disableCookieCache`:
+  - shield re-reads the stored session when a cached one isn't recent;
+  - it re-sets the cookie on success.
+- `stepUp.paths` defaults to `STEP_UP_PATHS`. `shieldRequireStepUp` is the server helper for the app's own routes.
+- Attempts use a per-user counter with the strict rule. Better Auth doesn't cap verify attempts on a signed-in session, so this cap is new protection, not a duplicate.
 
 ### 1.6 Security event log
 
-One table, `securityEvent`: `id`, `type`, `userId?`, `identifierHash`, `ip`, `userAgent`, `tenantId?`, `metadata`, `createdAt`.
+- Built as drafted, minus `tenantId`. That can be added once better-auth-multi-tenant needs it.
+- Not built yet:
+  - `two_factor.enabled`, `two_factor.disabled`;
+  - `session.revoked`;
+  - `sign_in.new_device`.
+- Added:
+  - `two_factor.success`, `two_factor.failure`, `two_factor.setup_required`;
+  - `send.limited`.
+- `onEvent` receives the plain identifier; the table stores only its HMAC.
 
-- Types: `sign_in.success`, `sign_in.failure`, `lockout`, `unlock`, `code.sent_limited`, `password.changed`, `password.reuse_blocked`, `password.change_required`, `two_factor.enabled`, `two_factor.disabled`, `step_up.success`, `step_up.failure`, `session.revoked`, `sign_in.new_device`.
-- Identifiers are stored as an HMAC (keyed with the auth secret), never raw, so the log doesn't become a list of emails people tried.
-- `onEvent(event)` callback for webhooks, Slack, email alerts. Errors inside it are caught and logged, never fail the request.
-- `retentionDays` (default 90) with a cleanup function you call from a cron (no background timers in edge runtimes).
-- `tenantId` is filled when better-auth-multi-tenant is installed.
+### 1.7 Testing
 
-### 1.7 Testing and security bar
-
-- Unit + integration tests on Better Auth's own test instance, run against the lowest supported, the release line and the latest Better Auth (same CI matrix as better-auth-multi-tenant).
-- Required tests:
-  - concurrency: 50 parallel wrong passwords must lock exactly once, with no counter lost
-  - enumeration: same status, body and headers for a known and an unknown identifier
-  - lockout DoS scenario
-  - identifier normalization: case, whitespace, Unicode
-  - each forced-state allowlist: nothing outside it works
-  - cookie-cache bypass for step-up
-  - every adapter: Postgres, MySQL, SQLite, Mongo
-- `docs/threat-model.md` before 0.1.0: what shield stops, what it does not, and every default with its reason.
-- Run our own security review on the finished code before the first release; publish with npm provenance.
+- Every feature runs on three backends:
+  - Better Auth's memory adapter;
+  - SQLite through Kysely (real SQL);
+  - secondary storage.
+- Time is mocked with `node:test` timers.
+- Covered: concurrency (parallel failures lock once), enumeration (same answer for known and unknown), normalization, each allowlist, and a stale cookie cache after a step-up.
+- Still to do before 0.1.0:
+  - a CI matrix over Better Auth versions;
+  - Postgres, MySQL and Mongo runs;
+  - npm provenance.
 
 ---
 
