@@ -9,6 +9,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         node: [20, 22, 24]
         # An include entry whose keys all match a combination is merged into it,
@@ -30,8 +31,9 @@ jobs:
           cache: npm
       - run: npm ci
       # Not --no-save: npm 10 crashes on it (Cannot read properties of null, edgesOut).
+      # Both, or npm mixes core from the lockfile with an older better-auth.
       - if: matrix.deps != 'lockfile'
-        run: npm install --no-audit --no-fund --legacy-peer-deps better-auth@${{ matrix.deps }}
+        run: npm install --no-audit --no-fund --legacy-peer-deps better-auth@${{ matrix.deps }} @better-auth/core@${{ matrix.deps }}
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
