@@ -12,12 +12,15 @@ import {
   hashIdentifier,
   normalizeIdentifier,
 } from "./identifier.js";
+import { passwordPolicy, type PasswordOptions } from "./password.js";
 
 export { ERROR_CODES } from "./error-codes.js";
 export type { ShieldErrorCode } from "./error-codes.js";
 export type { LockRule } from "./counter.js";
 export { SEND_PATHS, SIGN_IN_PATHS } from "./identifier.js";
 export { hashIdentifier, normalizeIdentifier } from "./identifier.js";
+export { CHANGE_FIELD, HISTORY_MODEL } from "./password.js";
+export type { PasswordOptions } from "./password.js";
 
 export const EVENT_MODEL = "securityEvent";
 
@@ -28,7 +31,10 @@ export type SecurityEventType =
   | "unlock"
   | "two_factor.success"
   | "two_factor.failure"
-  | "send.limited";
+  | "send.limited"
+  | "password.changed"
+  | "password.reuse_blocked"
+  | "password.change_required";
 
 export interface SecurityEvent {
   type: SecurityEventType;
@@ -40,7 +46,8 @@ export interface SecurityEvent {
   /**
    * Endpoint path for sign-in and second-factor events (plus the error `code`
    * of a second-factor failure, and `twoFactorPending` when a correct password
-   * still awaits the second factor), lock scope and end for lockouts.
+   * still awaits the second factor), lock scope and end for lockouts, `reason`
+   * (`max_age` or `manual`) for a required password change.
    */
   metadata: Record<string, unknown> | null;
   createdAt: Date;
@@ -88,6 +95,13 @@ export interface ShieldOptions {
    * `shieldCounter` table).
    */
   storage?: "database" | "secondary-storage";
+  /**
+   * Password history, password age and forced changes. Off unless set; `{}`
+   * blocks reuse of the last 5 passwords. Adds the `passwordHistory` table and
+   * `user.passwordChangeRequired`. Leave length rules to Better Auth's
+   * `minPasswordLength` and breach checks to its `haveIBeenPwned` plugin.
+   */
+  password?: PasswordOptions;
   /** The `securityEvent` table. `false` stops writing it; `onEvent` still runs. */
   events?: {
     enabled?: boolean;
@@ -164,6 +178,7 @@ export const shield = (options: ShieldOptions = {}) => {
   const retentionDays = options.events?.retentionDays ?? 90;
 
   let store: CounterStore;
+  const policy = options.password ? passwordPolicy(options.password, emit) : null;
 
   async function emit(
     ctx: AuthContext,
@@ -216,6 +231,7 @@ export const shield = (options: ShieldOptions = {}) => {
       } else {
         store = databaseStore(ctx);
       }
+      if (policy) return { options: { databaseHooks: policy.databaseHooks } };
     },
     hooks: {
       before: [
@@ -252,6 +268,7 @@ export const shield = (options: ShieldOptions = {}) => {
             }
           }),
         },
+        ...(policy?.before ?? []),
       ],
       after: [
         {
@@ -292,6 +309,7 @@ export const shield = (options: ShieldOptions = {}) => {
               t.identifier,
               t.headers,
             );
+            if (policy && user?.id) await policy.onSignIn(ctx, user.id);
           }),
         },
         {
@@ -331,8 +349,10 @@ export const shield = (options: ShieldOptions = {}) => {
             if (returned === undefined || (returned instanceof Response && !returned.ok)) return;
             const userId = (returned as { user?: { id?: string } } | null)?.user?.id ?? ctx.context.newSession?.user.id ?? null;
             await emit(ctx.context, { type: "two_factor.success", userId, identifierHash: null, metadata: { path } }, null, headers);
+            if (policy && userId) await policy.onSignIn(ctx, userId);
           }),
         },
+        ...(policy?.after ?? []),
       ],
     },
     endpoints: {
@@ -359,6 +379,23 @@ export const shield = (options: ShieldOptions = {}) => {
         },
       ),
       /**
+       * Server only: make a user change their password before doing anything
+       * else, e.g. after a breach. Needs the `password` option.
+       */
+      shieldRequirePasswordChange: createAuthEndpoint(
+        "/shield/require-password-change",
+        {
+          method: "POST",
+          body: z.object({ userId: z.string().min(1) }),
+          metadata: { SERVER_ONLY: true },
+        },
+        async (ctx) => {
+          if (!policy) throw new Error("better-auth-shield: set the `password` option to use shieldRequirePasswordChange");
+          await policy.setRequired(ctx.context, ctx.body.userId, "manual", ctx.request?.headers ?? ctx.headers);
+          return ctx.json({ success: true });
+        },
+      ),
+      /**
        * Server only: delete events older than `retentionDays` and idle counters.
        * Call it from a cron; shield runs no timers of its own.
        */
@@ -380,6 +417,7 @@ export const shield = (options: ShieldOptions = {}) => {
       }),
     },
     schema: {
+      ...policy?.schema,
       [COUNTER_MODEL]: {
         fields: {
           key: { type: "string", unique: true, required: true },

@@ -11,6 +11,14 @@ export const ERROR_CODES = {
     code: "SEND_LIMITED",
     message: "Too many codes or links requested. Try again later.",
   },
+  PASSWORD_REUSED: {
+    code: "PASSWORD_REUSED",
+    message: "Choose a password you haven't used recently.",
+  },
+  PASSWORD_CHANGE_REQUIRED: {
+    code: "PASSWORD_CHANGE_REQUIRED",
+    message: "Change your password to continue.",
+  },
 } as const;
 
 export type ShieldErrorCode = keyof typeof ERROR_CODES;

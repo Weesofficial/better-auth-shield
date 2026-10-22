@@ -32,6 +32,7 @@ export async function setup({
     shieldCounter: [],
     securityEvent: [],
     twoFactor: [],
+    passwordHistory: [],
   };
   const config = {
     secret: "test-secret-0123456789-abcdefghijklmnop",
