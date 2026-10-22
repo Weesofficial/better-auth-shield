@@ -148,6 +148,33 @@ for (const [backend, extra] of Object.entries(backends)) {
       for (let i = 0; i < 3; i++) assert.equal((await otp("grace@example.com")).status, 200);
       assert.equal((await otp("grace@example.com")).status, 429);
     });
+
+    it("limits sign-ups by address when Better Auth emails the owner of a taken one", async () => {
+      const sent: string[] = [];
+      const base: { auth?: object; database?: "sqlite" } = extra();
+      const make = (onExistingUserSignUp?: (data: { user: { email: string } }) => Promise<void>) =>
+        setup({
+          ...base,
+          auth: { ...base.auth, emailAndPassword: { enabled: true, requireEmailVerification: true, onExistingUserSignUp } },
+          plugins: [shield()],
+        });
+      const signUpAs = (auth: Awaited<ReturnType<typeof make>>["auth"], email: string) =>
+        post(auth, "/sign-up/email", { email, password: PASSWORD, name: "Ada" });
+
+      const { auth } = await make(async ({ user }) => void sent.push(`existing:${user.email}`));
+      for (let i = 0; i < 3; i++) assert.equal((await signUpAs(auth, EMAIL)).status, 200);
+      const limited = await signUpAs(auth, "ADA@example.com");
+      assert.equal(limited.status, 429);
+      assert.equal(((await limited.json()) as { code: string }).code, "SEND_LIMITED");
+      assert.deepEqual(sent, ["existing:ada@example.com", "existing:ada@example.com"]);
+      // A free address is limited the same way, so the 429 doesn't tell them apart.
+      for (let i = 0; i < 3; i++) await signUpAs(auth, "grace@example.com");
+      assert.equal((await signUpAs(auth, "grace@example.com")).status, 429);
+
+      // Without the callback nothing is sent, so nothing is limited.
+      const quiet = await make();
+      for (let i = 0; i < 5; i++) assert.equal((await signUpAs(quiet.auth, EMAIL)).status, 200);
+    });
   });
 }
 

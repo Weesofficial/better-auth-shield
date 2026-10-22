@@ -174,6 +174,9 @@ const tooMany = (error: (typeof ERROR_CODES)[keyof typeof ERROR_CODES], until: n
   return new APIError("TOO_MANY_REQUESTS", { ...error, retryAfter }, { "Retry-After": String(retryAfter) });
 };
 
+/** Emails the owner of a taken address when `emailAndPassword.onExistingUserSignUp` is set. */
+const SIGN_UP_PATH = "/sign-up/email";
+
 /**
  * Account security for Better Auth: lockout per identifier and a security
  * event log in your own database.
@@ -306,8 +309,14 @@ export const shield = (options: ShieldOptions = {}) => {
         ...(stepper?.before ?? []),
         {
           // After the gates above, so a request they refuse never uses up the address's sends.
-          matcher: (ctx) => !!ctx.path && ctx.path in SIGNED_IN_SEND_PATHS && !(ctx.path in sendPaths) && sendRules.length > 0,
-          handler: createAuthMiddleware((ctx) => limitSend(ctx, SIGNED_IN_SEND_PATHS[ctx.path!]!)),
+          matcher: (ctx) => !!ctx.path && (ctx.path in SIGNED_IN_SEND_PATHS || ctx.path === SIGN_UP_PATH) && !(ctx.path in sendPaths) && sendRules.length > 0,
+          handler: createAuthMiddleware(async (ctx) => {
+            if (ctx.path !== SIGN_UP_PATH) return limitSend(ctx, SIGNED_IN_SEND_PATHS[ctx.path!]!);
+            // Better Auth emails the owner of a taken address only in these modes; then every
+            // sign-up for the address counts, taken or not, so a 429 says nothing about who has an account.
+            const email = ctx.context.options.emailAndPassword;
+            if (email?.onExistingUserSignUp && (email.requireEmailVerification || email.autoSignIn === false)) await limitSend(ctx, "email");
+          }),
         },
       ],
       after: [
