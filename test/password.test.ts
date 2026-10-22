@@ -152,6 +152,21 @@ for (const backend of Object.keys(backends) as (keyof typeof backends)[]) {
       assert.equal((await change(auth, cookie, SECOND, THIRD)).status, 200);
     });
 
+    it("never tells an admin whether a password is one of the user's", async () => {
+      const { auth, user, cookie } = await app(backend);
+      const { adapter } = await auth.$context;
+      await post(auth, "/sign-up/email", { email: "root@example.com", password: PASSWORD, name: "Root", username: "root" });
+      await adapter.update({ model: "user", where: [{ field: "email", value: "root@example.com" }], update: { role: "admin" } });
+      const root = cookiesOf(await signIn(auth, "root@example.com", PASSWORD));
+      const set = (newPassword: string) => post(auth, "/admin/set-user-password", { userId: user.id, newPassword }, undefined, root);
+      // The user's current password, then a new one: both just succeed.
+      assert.equal((await set(PASSWORD)).status, 200);
+      assert.equal((await set(SECOND)).status, 200);
+      // The passwords replaced are still history for the user's own change.
+      assert.equal(await codeOf(await change(auth, cookie, SECOND, PASSWORD)), "PASSWORD_REUSED");
+      assert.equal((await change(auth, cookie, SECOND, THIRD)).status, 200);
+    });
+
     it("flags a password older than maxAgeDays at sign-in", async () => {
       mock.timers.enable({ apis: ["Date"], now: Date.now() });
       const { auth } = await app(backend, { maxAgeDays: 90 });

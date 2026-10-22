@@ -89,8 +89,8 @@ export function passwordPolicy(options: PasswordOptions, emit: Emit) {
     await emit(ctx, { type: "password.change_required", userId, identifierHash: null, metadata: { reason } }, null, headers);
   }
 
-  /** Whether `plain` is the current password or a stored old one. */
-  async function check(ctx: AuthContext, userId: string, plain: string) {
+  /** Whether `plain` is the current password or a stored old one; null only notes the current one for history. */
+  async function check(ctx: AuthContext, userId: string, plain: string | null) {
     // Inside Better Auth's transaction, when there is one.
     const adapter = await getCurrentAdapter(ctx.adapter);
     const account = await adapter.findOne<{ password?: string | null }>({
@@ -102,7 +102,7 @@ export function passwordPolicy(options: PasswordOptions, emit: Emit) {
     });
     const previous = account?.password ?? null;
     const older =
-      history > 1
+      history > 1 && plain !== null
         ? await adapter.findMany<{ hash: string }>({
             model: HISTORY_MODEL,
             where: [{ field: "userId", value: userId }],
@@ -110,8 +110,8 @@ export function passwordPolicy(options: PasswordOptions, emit: Emit) {
             limit: history - 1,
           })
         : [];
-    const hashes = history > 0 ? [previous, ...older.map((row) => row.hash)].filter((hash): hash is string => !!hash) : [];
-    const matches = await Promise.all(hashes.map((hash) => ctx.password.verify({ hash, password: plain })));
+    const hashes = history > 0 && plain !== null ? [previous, ...older.map((row) => row.hash)].filter((hash): hash is string => !!hash) : [];
+    const matches = await Promise.all(hashes.map((hash) => ctx.password.verify({ hash, password: plain! })));
     const reused = matches.some(Boolean);
     await pending.set({ userId, previous, reused });
     return reused;
@@ -134,6 +134,9 @@ export function passwordPolicy(options: PasswordOptions, emit: Emit) {
           const plain = ctx?.body?.[spec?.field ?? ""];
           if (!ctx || !spec || typeof data.password !== "string" || typeof plain !== "string") return;
           const userId = await spec.user(ctx as unknown as EndpointCtx);
+          // Refusing an admin would tell them whether a guess is one of the user's passwords, and they
+          // can set any password anyway. Not compared, but recorded, so the user's next change can't reuse it.
+          if (userId && ctx.path === ADMIN_PATH) return void (await check(ctx.context, userId, null));
           if (userId && (await check(ctx.context, userId, plain))) {
             throw new APIError("BAD_REQUEST", ERROR_CODES.PASSWORD_REUSED);
           }
