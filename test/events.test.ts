@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it, mock } from "node:test";
 import { hashIdentifier, normalizeIdentifier } from "../src/index.js";
-import { EMAIL, PASSWORD, WRONG, setup, signIn, signUp } from "./helpers.js";
+import { HAS_SQLITE, EMAIL, PASSWORD, WRONG, setup, signIn, signUp } from "./helpers.js";
 
 describe("security events", () => {
   it("records failures, the lockout and a success, without storing the email", async () => {
@@ -49,6 +49,7 @@ describe("security events", () => {
   });
 
   for (const database of ["memory", "sqlite"] as const) {
+    if (database === "sqlite" && !HAS_SQLITE) continue;
     it(`cleanup removes old events and idle counters only (${database})`, async () => {
       mock.timers.enable({ apis: ["Date"], now: Date.now() });
       try {

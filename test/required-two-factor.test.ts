@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { afterEach, describe, it, mock } from "node:test";
 import { admin, twoFactor, username } from "better-auth/plugins";
 import { shield, type ShieldOptions } from "../src/index.js";
-import { EMAIL, PASSWORD, cookiesOf, memoryStorage, post, setup, signIn } from "./helpers.js";
+import { HAS_SQLITE, EMAIL, PASSWORD, cookiesOf, memoryStorage, post, setup, signIn } from "./helpers.js";
 
 const backends = {
   memory: () => ({}),
@@ -41,6 +41,7 @@ async function app(backend: keyof typeof backends, required: NonNullable<ShieldO
 const codeOf = async (res: Response) => ((await res.json()) as { code?: string }).code;
 
 for (const backend of Object.keys(backends) as (keyof typeof backends)[]) {
+  if (backend === "sqlite" && !HAS_SQLITE) continue;
   describe(`required two-factor (${backend})`, () => {
     afterEach(() => mock.timers.reset());
 

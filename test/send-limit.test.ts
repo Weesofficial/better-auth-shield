@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { afterEach, describe, it, mock } from "node:test";
 import { emailOTP, magicLink } from "better-auth/plugins";
 import { shield, type ShieldOptions } from "../src/index.js";
-import { EMAIL, PASSWORD, cookiesOf, memoryStorage, post, setup, signUp } from "./helpers.js";
+import { HAS_SQLITE, EMAIL, PASSWORD, cookiesOf, memoryStorage, post, setup, signUp } from "./helpers.js";
 
 const backends = {
   memory: () => ({}),
@@ -11,6 +11,7 @@ const backends = {
 };
 
 for (const [backend, extra] of Object.entries(backends)) {
+  if (backend === "sqlite" && !HAS_SQLITE) continue;
   describe(`send limits (${backend})`, () => {
     afterEach(() => mock.timers.reset());
 

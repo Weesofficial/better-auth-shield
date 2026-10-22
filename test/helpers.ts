@@ -1,9 +1,12 @@
 import { betterAuth, type BetterAuthOptions, type BetterAuthPlugin, type SecondaryStorage } from "better-auth";
 import { memoryAdapter } from "better-auth/adapters/memory";
 import { getMigrations } from "better-auth/db/migration";
-import { DatabaseSync } from "node:sqlite";
 import { username } from "better-auth/plugins";
 import { shield, type ShieldOptions } from "../src/index.js";
+
+// node:sqlite arrived in Node 22; Node 20 runs only the other backends.
+const sqlite = await import("node:sqlite").catch(() => null);
+export const HAS_SQLITE = sqlite !== null;
 
 export const PASSWORD = "correct-horse-battery";
 export const WRONG = "wrong-password-123";
@@ -37,7 +40,7 @@ export async function setup({
   const config = {
     secret: "test-secret-0123456789-abcdefghijklmnop",
     baseURL: "http://localhost:3000",
-    database: database === "sqlite" ? new DatabaseSync(":memory:") : memoryAdapter(db),
+    database: database === "sqlite" ? new sqlite!.DatabaseSync(":memory:") : memoryAdapter(db),
     emailAndPassword: { enabled: true },
     rateLimit: { enabled: false },
     advanced: { ipAddress: { ipAddressHeaders: ["x-forwarded-for"] } },

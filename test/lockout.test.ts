@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it, mock } from "node:test";
-import { EMAIL, PASSWORD, WRONG, memoryStorage, post, setup, signIn, signUp } from "./helpers.js";
+import { HAS_SQLITE, EMAIL, PASSWORD, WRONG, memoryStorage, post, setup, signIn, signUp } from "./helpers.js";
 
 const fail = async (auth: Parameters<typeof signIn>[0], times: number, email = EMAIL, ip?: string) => {
   for (let i = 0; i < times; i++) await signIn(auth, email, WRONG, ip);
@@ -13,6 +13,7 @@ const backends = {
 };
 
 for (const [backend, extra] of Object.entries(backends)) {
+  if (backend === "sqlite" && !HAS_SQLITE) continue;
   describe(`lockout (${backend})`, () => {
     afterEach(() => mock.timers.reset());
 

@@ -4,7 +4,7 @@ import type { BetterAuthPlugin } from "better-auth";
 import { createAuthEndpoint, sessionMiddleware } from "better-auth/api";
 import { admin, emailOTP, twoFactor, username } from "better-auth/plugins";
 import { shield, type ShieldOptions } from "../src/index.js";
-import { EMAIL, PASSWORD, WRONG, cookiesOf, memoryStorage, post, setup } from "./helpers.js";
+import { HAS_SQLITE, EMAIL, PASSWORD, WRONG, cookiesOf, memoryStorage, post, setup } from "./helpers.js";
 
 const backends = {
   memory: () => ({}),
@@ -43,6 +43,7 @@ async function app(backend: keyof typeof backends, stepUp: NonNullable<ShieldOpt
 const codeOf = async (res: Response) => ((await res.json()) as { code?: string }).code;
 
 for (const backend of Object.keys(backends) as (keyof typeof backends)[]) {
+  if (backend === "sqlite" && !HAS_SQLITE) continue;
   describe(`step-up (${backend})`, () => {
     afterEach(() => mock.timers.reset());
 

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { twoFactor } from "better-auth/plugins";
 import { shield } from "../src/index.js";
-import { EMAIL, PASSWORD, cookiesOf, post, setup, signIn, signUp } from "./helpers.js";
+import { HAS_SQLITE, EMAIL, PASSWORD, cookiesOf, post, setup, signIn, signUp } from "./helpers.js";
 
 async function withTwoFactor(database: "memory" | "sqlite") {
   const events: { type: string; userId: string | null; metadata: Record<string, unknown> | null }[] = [];
@@ -19,6 +19,7 @@ async function withTwoFactor(database: "memory" | "sqlite") {
 }
 
 for (const database of ["memory", "sqlite"] as const) {
+  if (database === "sqlite" && !HAS_SQLITE) continue;
   describe(`second factor (${database})`, () => {
     it("records a pending password sign-in, failed codes with the user, then the success", async () => {
       const { auth, user, backupCodes, events } = await withTwoFactor(database);

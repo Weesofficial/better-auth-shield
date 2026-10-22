@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { afterEach, describe, it, mock } from "node:test";
 import { admin, emailOTP, username } from "better-auth/plugins";
 import { shield, type ShieldOptions } from "../src/index.js";
-import { EMAIL, PASSWORD, cookiesOf, memoryStorage, post, setup, signIn } from "./helpers.js";
+import { HAS_SQLITE, EMAIL, PASSWORD, cookiesOf, memoryStorage, post, setup, signIn } from "./helpers.js";
 
 const backends = {
   memory: () => ({}),
@@ -49,6 +49,7 @@ const change = (auth: Parameters<typeof post>[0], cookie: string, currentPasswor
 const codeOf = async (res: Response) => (await res.json()).code;
 
 for (const backend of Object.keys(backends) as (keyof typeof backends)[]) {
+  if (backend === "sqlite" && !HAS_SQLITE) continue;
   describe(`password policy (${backend})`, () => {
     afterEach(() => mock.timers.reset());
 
