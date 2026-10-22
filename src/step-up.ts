@@ -55,6 +55,38 @@ const PASSWORD_CHECK_PATHS = new Set(["/change-password", "/two-factor/enable", 
 type HookCtx = Parameters<Parameters<typeof createAuthMiddleware>[0]>[0];
 type Row = Session & Record<string, unknown>;
 
+interface TwoFactorOptions {
+  allowPasswordless?: boolean;
+  totpOptions?: { allowPasswordless?: boolean };
+  twoFactorTable?: string;
+}
+
+/**
+ * Whether this request sets up two-factor without a password check: with
+ * `allowPasswordless`, Better Auth skips it for a user with no password, so a
+ * stolen session could enroll its own authenticator. Such a request needs a
+ * recent step-up whatever `stepUp.paths` says.
+ */
+async function enrollsWithoutPassword(ctx: HookCtx, userId: string) {
+  const plugin = ctx.context.options.plugins?.find((p) => p.id === "two-factor") as { options?: TwoFactorOptions } | undefined;
+  const options = plugin?.options;
+  const totpPasswordless = options?.totpOptions?.allowPasswordless ?? options?.allowPasswordless;
+  const skips =
+    ctx.path === "/two-factor/enable"
+      ? options?.allowPasswordless
+      : ctx.path === "/two-factor/get-totp-uri"
+        ? totpPasswordless
+        : ctx.path === "/two-factor/verify-totp" && totpPasswordless;
+  if (!skips || (await ctx.context.internalAdapter.findCredentialAccount(userId))?.password) return false;
+  if (ctx.path !== "/two-factor/verify-totp") return true;
+  // A check against a verified authenticator is a step-up; one against an unverified one turns it on.
+  const row = await ctx.context.adapter.findOne<{ verified?: boolean | null }>({
+    model: options?.twoFactorTable ?? "twoFactor",
+    where: [{ field: "userId", value: userId }],
+  });
+  return row?.verified === false;
+}
+
 /**
  * Re-authentication for sensitive actions. A user proves it's them again with
  * their password (`/shield/step-up`) or a second factor (Better Auth's own
@@ -122,7 +154,7 @@ export function stepUp(
         // No session: the endpoint refuses it, or it's a sign-in challenge Better Auth caps itself.
         if (!session) return;
         if (ctx.path! in VERIFY_PATHS || PASSWORD_CHECK_PATHS.has(ctx.path!)) await assertUnlocked(session.user.id);
-        if (!guarded.has(ctx.path!)) return;
+        if (!guarded.has(ctx.path!) && !(await enrollsWithoutPassword(ctx, session.user.id))) return;
         if (!(await recent(ctx.context, session.session as Row, maxAge))) {
           throw new APIError("FORBIDDEN", ERROR_CODES.STEP_UP_REQUIRED);
         }

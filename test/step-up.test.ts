@@ -189,6 +189,35 @@ for (const backend of Object.keys(backends) as (keyof typeof backends)[]) {
       assert.equal(await codeOf(await post(auth, "/electron/transfer-user", {}, undefined, cookie)), "STEP_UP_REQUIRED");
     });
 
+    it("guards two-factor setup that skips the password for a user without one", async () => {
+      mock.timers.enable({ apis: ["Date"], now: Date.now() });
+      const extra = backends[backend]();
+      const { auth } = await setup({ ...extra, plugins: [twoFactor({ allowPasswordless: true }), shield({ stepUp: {}, sendLimit: false })] });
+      const signUp = async (email: string) => {
+        const res = await post(auth, "/sign-up/email", { email, password: PASSWORD, name: "Ada" });
+        return { cookie: cookiesOf(res), id: ((await res.json()) as { user: { id: string } }).user.id };
+      };
+      const ada = await signUp(EMAIL);
+      const grace = await signUp("grace@example.com");
+      // Ada signs in some other way and has no password.
+      const { adapter } = await auth.$context;
+      await adapter.deleteMany({ model: "account", where: [{ field: "userId", value: ada.id }] });
+
+      const enabled = await post(auth, "/two-factor/enable", {}, undefined, ada.cookie);
+      assert.equal(enabled.status, 200);
+      mock.timers.tick(6 * MINUTE);
+      for (const [path, body] of [
+        ["/two-factor/get-totp-uri", {}],
+        ["/two-factor/verify-totp", { code: "000000" }],
+        ["/two-factor/enable", {}],
+      ] as const) {
+        assert.equal(await codeOf(await post(auth, path, body, undefined, ada.cookie)), "STEP_UP_REQUIRED", path);
+      }
+      // A user with a password still proves it to Better Auth, so nothing changes for them.
+      assert.equal((await post(auth, "/two-factor/enable", { password: PASSWORD }, undefined, grace.cookie)).status, 200);
+      assert.equal((await post(auth, "/two-factor/get-totp-uri", { password: PASSWORD }, undefined, grace.cookie)).status, 200);
+    });
+
     it("guards your own routes through shieldRequireStepUp", async () => {
       mock.timers.enable({ apis: ["Date"], now: Date.now() });
       const { auth, cookie, stepUp } = await app(backend);
