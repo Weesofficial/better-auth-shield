@@ -1,6 +1,6 @@
 # better-auth-shield + better-auth-console: design
 
-Status: shield built on `main` (2026-10-23), not released. Console not started.
+Status: shield and console built on `main` (2026-10-23), neither released. Console repo: [Weesofficial/better-auth-console](https://github.com/Weesofficial/better-auth-console).
 
 Two packages, built in this order:
 
@@ -126,6 +126,14 @@ Admin console that **runs inside your app**: a Better Auth plugin that serves a 
 | Organizations / tenants | shown only when the `organization` plugin or better-auth-multi-tenant is installed |
 
 Later: impersonation (admin plugin), alert rules, CSV export, hosted version, longer retention.
+
+**As built (2026-10-23), differences from the plan above:**
+
+- No IP allowlist yet. Access is the admin plugin's permissions plus step-up (password through `/shield/step-up`, or a TOTP code).
+- No "locked" filter on Users: locks live in shield's counters, keyed by identifier hash, so they show on the user detail page instead.
+- No Organizations / tenants screen yet.
+- The UI is one HTML file embedded in the package (scripts and styles inline, allowed by CSP hashes), not separate assets in `dist/`.
+- Tested with `node:test` against real Better Auth apps on the memory and SQLite adapters, plus a seeded sample app (`npm run dev`) checked by hand in a browser. No Playwright suite yet.
 
 ### 2.3 Tech
 
