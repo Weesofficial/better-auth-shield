@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it, mock } from "node:test";
+import type { BetterAuthPlugin } from "better-auth";
+import { createAuthEndpoint, sessionMiddleware } from "better-auth/api";
 import { admin, emailOTP, twoFactor, username } from "better-auth/plugins";
 import { shield, type ShieldOptions } from "../src/index.js";
 import { EMAIL, PASSWORD, WRONG, cookiesOf, memoryStorage, post, setup } from "./helpers.js";
@@ -165,6 +167,26 @@ for (const backend of Object.keys(backends) as (keyof typeof backends)[]) {
         ["/email-otp/change-email", { newEmail: "eve@example.com", otp: "000000" }],
       ];
       for (const [path, body] of calls) assert.equal(await codeOf(await post(auth, path, body, undefined, cookie)), "STEP_UP_REQUIRED", path);
+    });
+
+    it("guards the Electron hand-off, which would mint a fresh session", async () => {
+      mock.timers.enable({ apis: ["Date"], now: Date.now() });
+      // @better-auth/electron isn't a dev dependency; a stand-in at its path, signed-in like the real one.
+      const electron = {
+        id: "electron-stand-in",
+        endpoints: {
+          transfer: createAuthEndpoint("/electron/transfer-user", { method: "POST", use: [sessionMiddleware] }, async (ctx) =>
+            ctx.json({ electron_authorization_code: "code" }),
+          ),
+        },
+      } satisfies BetterAuthPlugin;
+      const extra = backends[backend]();
+      const { auth } = await setup({ ...extra, plugins: [username(), electron, shield({ stepUp: {}, sendLimit: false })] });
+      const res = await post(auth, "/sign-up/email", { email: EMAIL, password: PASSWORD, name: "Ada", username: "ada_l" });
+      const cookie = cookiesOf(res);
+      assert.equal((await post(auth, "/electron/transfer-user", {}, undefined, cookie)).status, 200);
+      mock.timers.tick(6 * MINUTE);
+      assert.equal(await codeOf(await post(auth, "/electron/transfer-user", {}, undefined, cookie)), "STEP_UP_REQUIRED");
     });
 
     it("guards your own routes through shieldRequireStepUp", async () => {

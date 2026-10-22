@@ -23,6 +23,8 @@ export const STEP_UP_PATHS = [
   "/two-factor/generate-backup-codes",
   // Approving a device hands it a new session, which would count as a fresh sign-in.
   "/device/approve",
+  // Hands the Electron app a code that /electron/token swaps for a new session; same problem.
+  "/electron/transfer-user",
   "/admin/impersonate-user",
   "/admin/set-role",
   // Can set the role and email too.
