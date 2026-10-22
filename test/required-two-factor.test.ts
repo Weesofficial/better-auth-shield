@@ -12,10 +12,11 @@ const backends = {
 
 const DAY = 24 * 60 * 60 * 1000;
 
-async function app(backend: keyof typeof backends, required: NonNullable<ShieldOptions["twoFactor"]>) {
+async function app(backend: keyof typeof backends, required: NonNullable<ShieldOptions["twoFactor"]>, options: object = {}) {
   const extra = backends[backend]();
   const { auth } = await setup({
     ...extra,
+    auth: { ...(extra as { auth?: object }).auth, ...options },
     plugins: [username(), admin(), twoFactor({ skipVerificationOnEnable: true }), shield({ twoFactor: required, sendLimit: false })],
   });
   const signUp = async (email: string, name: string) => {
@@ -86,6 +87,31 @@ for (const backend of Object.keys(backends) as (keyof typeof backends)[]) {
       assert.equal(await codeOf(off), "TWO_FACTOR_REQUIRED");
 
       assert.equal((await post(auth, "/two-factor/disable", { password: PASSWORD }, undefined, await enable(ada.cookie))).status, 200);
+    });
+
+    it("decides on the stored user when a cookie cache would serve a stale one", async () => {
+      const cache = { session: { cookieCache: { enabled: true, maxAge: 60 * 60 } } };
+      const byRole = await app(backend, { required: (user) => user.role === "admin", graceDays: 0 }, cache);
+      const { internalAdapter } = await byRole.auth.$context;
+      const ada = await byRole.signUp(EMAIL, "ada_l");
+      assert.equal((await byRole.update(ada.cookie)).status, 200);
+      await internalAdapter.updateUser(ada.user.id, { role: "admin" });
+      assert.equal(await codeOf(await byRole.update(ada.cookie)), "TWO_FACTOR_SETUP_REQUIRED");
+
+      // Turned on before the role made it required: it can't be turned off after.
+      const grace = await byRole.signUp("grace@example.com", "grace_h");
+      const cookie = await byRole.enable(grace.cookie);
+      await internalAdapter.updateUser(grace.user.id, { role: "admin" });
+      const disable = await post(byRole.auth, "/two-factor/disable", { password: PASSWORD }, undefined, cookie);
+      assert.equal(await codeOf(disable), "TWO_FACTOR_REQUIRED");
+
+      // Two-factor turned off behind the cached session's back.
+      const all = await app(backend, { required: true, graceDays: 0 }, cache);
+      const alan = await all.signUp("alan@example.com", "alan_t");
+      const enabled = await all.enable(alan.cookie);
+      assert.equal((await all.update(enabled)).status, 200);
+      await (await all.auth.$context).internalAdapter.updateUser(alan.user.id, { twoFactorEnabled: false });
+      assert.equal(await codeOf(await all.update(enabled)), "TWO_FACTOR_SETUP_REQUIRED");
     });
   });
 }

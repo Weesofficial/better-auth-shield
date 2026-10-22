@@ -63,7 +63,11 @@ export function requiredTwoFactor(options: RequiredTwoFactorOptions, emit: Emit)
       handler: createAuthMiddleware(async (ctx) => {
         const session = await getSessionFromCtx(ctx).catch(() => null);
         if (!session) return;
-        const user = session.user as Row;
+        // A cookie cache serves the user as it was when cached: a role granted or two-factor
+        // turned off since would go unseen until it expires. Decide on the stored user then.
+        const stored = ctx.path === DISABLE_PATH || !!ctx.context.options.session?.cookieCache?.enabled;
+        const user = stored ? ((await ctx.context.internalAdapter.findUserById(session.user.id)) as Row | null) : (session.user as Row);
+        if (!user) return;
         if (ctx.path === DISABLE_PATH) {
           if (await covers(user)) throw new APIError("FORBIDDEN", ERROR_CODES.TWO_FACTOR_REQUIRED);
           return;
@@ -71,7 +75,7 @@ export function requiredTwoFactor(options: RequiredTwoFactorOptions, emit: Emit)
         const due = await deadline(ctx.context, user, ctx.request?.headers ?? ctx.headers);
         if (!due || due.getTime() > Date.now()) return;
         // A cached session can miss a two-factor setup that just happened.
-        const fresh = (await ctx.context.internalAdapter.findUserById(user.id)) as Row | null;
+        const fresh = stored ? user : ((await ctx.context.internalAdapter.findUserById(user.id)) as Row | null);
         if (fresh && !fresh.twoFactorEnabled && (await covers(fresh))) {
           throw new APIError("FORBIDDEN", ERROR_CODES.TWO_FACTOR_SETUP_REQUIRED);
         }
