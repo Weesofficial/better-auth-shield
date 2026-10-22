@@ -1,0 +1,21 @@
+{
+  "name": "better-auth-shield",
+  "version": "0.0.1",
+  "description": "Account security for Better Auth: per-account lockout, OTP send limits, password history, required 2FA, step-up auth and a security event log.",
+  "license": "MIT",
+  "keywords": [
+    "better-auth",
+    "auth",
+    "security",
+    "lockout"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Weesofficial/better-auth-shield.git"
+  },
+  "homepage": "https://github.com/Weesofficial/better-auth-shield#readme",
+  "files": [
+    "README.md",
+    "LICENSE"
+  ]
+}
