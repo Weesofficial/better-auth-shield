@@ -13,6 +13,7 @@ import {
   normalizeIdentifier,
 } from "./identifier.js";
 import { passwordPolicy, type PasswordOptions } from "./password.js";
+import { requiredTwoFactor, type RequiredTwoFactorOptions } from "./required-two-factor.js";
 
 export { ERROR_CODES } from "./error-codes.js";
 export type { ShieldErrorCode } from "./error-codes.js";
@@ -21,6 +22,8 @@ export { SEND_PATHS, SIGN_IN_PATHS } from "./identifier.js";
 export { hashIdentifier, normalizeIdentifier } from "./identifier.js";
 export { CHANGE_FIELD, HISTORY_MODEL } from "./password.js";
 export type { PasswordOptions } from "./password.js";
+export { DUE_FIELD } from "./required-two-factor.js";
+export type { RequiredTwoFactorOptions } from "./required-two-factor.js";
 
 export const EVENT_MODEL = "securityEvent";
 
@@ -31,6 +34,7 @@ export type SecurityEventType =
   | "unlock"
   | "two_factor.success"
   | "two_factor.failure"
+  | "two_factor.setup_required"
   | "send.limited"
   | "password.changed"
   | "password.reuse_blocked"
@@ -47,7 +51,8 @@ export interface SecurityEvent {
    * Endpoint path for sign-in and second-factor events (plus the error `code`
    * of a second-factor failure, and `twoFactorPending` when a correct password
    * still awaits the second factor), lock scope and end for lockouts, `reason`
-   * (`max_age` or `manual`) for a required password change.
+   * (`max_age` or `manual`) for a required password change, `dueAt` for a
+   * two-factor deadline.
    */
   metadata: Record<string, unknown> | null;
   createdAt: Date;
@@ -102,6 +107,12 @@ export interface ShieldOptions {
    * `minPasswordLength` and breach checks to its `haveIBeenPwned` plugin.
    */
   password?: PasswordOptions;
+  /**
+   * Make two-factor mandatory for everyone (`required: true`) or for the users
+   * a function picks, e.g. `(user) => user.role === "admin"`. Needs Better
+   * Auth's `twoFactor()` plugin. Adds `user.twoFactorDueAt`.
+   */
+  twoFactor?: RequiredTwoFactorOptions;
   /** The `securityEvent` table. `false` stops writing it; `onEvent` still runs. */
   events?: {
     enabled?: boolean;
@@ -179,6 +190,7 @@ export const shield = (options: ShieldOptions = {}) => {
 
   let store: CounterStore;
   const policy = options.password ? passwordPolicy(options.password, emit) : null;
+  const mandatory = options.twoFactor ? requiredTwoFactor(options.twoFactor, emit) : null;
 
   async function emit(
     ctx: AuthContext,
@@ -231,6 +243,7 @@ export const shield = (options: ShieldOptions = {}) => {
       } else {
         store = databaseStore(ctx);
       }
+      mandatory?.init(ctx);
       if (policy) return { options: { databaseHooks: policy.databaseHooks } };
     },
     hooks: {
@@ -269,6 +282,7 @@ export const shield = (options: ShieldOptions = {}) => {
           }),
         },
         ...(policy?.before ?? []),
+        ...(mandatory?.before ?? []),
       ],
       after: [
         {
@@ -353,6 +367,7 @@ export const shield = (options: ShieldOptions = {}) => {
           }),
         },
         ...(policy?.after ?? []),
+        ...(mandatory?.after ?? []),
       ],
     },
     endpoints: {
@@ -418,6 +433,7 @@ export const shield = (options: ShieldOptions = {}) => {
     },
     schema: {
       ...policy?.schema,
+      user: { fields: { ...policy?.schema.user.fields, ...mandatory?.fields } },
       [COUNTER_MODEL]: {
         fields: {
           key: { type: "string", unique: true, required: true },

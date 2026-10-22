@@ -42,6 +42,27 @@ export const SEND_PATHS: Record<string, string> = {
 export const TWO_FACTOR_PATHS = new Set(["/two-factor/verify-totp", "/two-factor/verify-otp", "/two-factor/verify-backup-code"]);
 export const TWO_FACTOR_FAILURE_CODES = new Set(["INVALID_CODE", "INVALID_BACKUP_CODE", "OTP_HAS_EXPIRED"]);
 
+/** Endpoints a restricted session (password change or 2FA setup due) can still call. */
+export const OPEN_PATHS = [
+  "/change-password",
+  "/reset-password",
+  "/email-otp/reset-password",
+  "/phone-number/reset-password",
+  "/sign-out",
+  "/get-session",
+  "/list-sessions",
+  "/revoke-session",
+  "/revoke-sessions",
+  "/revoke-other-sessions",
+  "/sign-up/email",
+  "/verify-email",
+  "/ok",
+  "/error",
+  ...Object.keys(SIGN_IN_PATHS),
+  ...Object.keys(SEND_PATHS),
+  ...TWO_FACTOR_PATHS,
+];
+
 /** Longest identifier hashed; longer input is cut so a huge body can't cost an expensive hash. */
 const MAX_LENGTH = 320;
 

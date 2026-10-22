@@ -3,7 +3,7 @@ import type { AuthContext, BetterAuthOptions, BetterAuthPlugin } from "better-au
 import { APIError, createAuthMiddleware, getSessionFromCtx } from "better-auth/api";
 import { setSessionCookie } from "better-auth/cookies";
 import { ERROR_CODES } from "./error-codes.js";
-import { SEND_PATHS, SIGN_IN_PATHS, TWO_FACTOR_PATHS } from "./identifier.js";
+import { OPEN_PATHS } from "./identifier.js";
 import type { SecurityEvent } from "./index.js";
 
 export const HISTORY_MODEL = "passwordHistory";
@@ -30,7 +30,7 @@ type EndpointCtx = {
   context: AuthContext & { session?: { user: { id: string } } | null };
 };
 
-type Emit = (
+export type Emit = (
   ctx: AuthContext,
   event: Pick<SecurityEvent, "type" | "metadata"> & { userId: string | null; identifierHash: null },
   identifier: null,
@@ -65,26 +65,8 @@ const PASSWORD_PATHS: Record<string, { field: string; user: (ctx: EndpointCtx) =
   },
 };
 
-/** Endpoints that stay open while a password change is required. */
-const ALWAYS_ALLOWED = [
-  "/change-password",
-  "/sign-out",
-  "/get-session",
-  "/list-sessions",
-  "/revoke-session",
-  "/revoke-sessions",
-  "/revoke-other-sessions",
-  "/sign-up/email",
-  "/verify-email",
-  "/ok",
-  "/error",
-  ...Object.keys(SIGN_IN_PATHS),
-  ...Object.keys(SEND_PATHS),
-  ...TWO_FACTOR_PATHS,
-  ...Object.keys(PASSWORD_PATHS).filter((path) => path !== ADMIN_PATH),
-];
 
-function checkCount(name: string, value: number) {
+export function checkCount(name: string, value: number) {
   if (!Number.isInteger(value) || value < 0) {
     throw new Error(`better-auth-shield: ${name} must be a non-negative integer, got ${String(value)}`);
   }
@@ -100,7 +82,7 @@ function checkCount(name: string, value: number) {
 export function passwordPolicy(options: PasswordOptions, emit: Emit) {
   const history = checkCount("password.history", options.history ?? 5);
   const maxAgeDays = checkCount("password.maxAgeDays", options.maxAgeDays ?? 0);
-  const allowed = new Set([...ALWAYS_ALLOWED, ...(options.allow ?? [])]);
+  const allowed = new Set([...OPEN_PATHS, "/set-password", ...(options.allow ?? [])]);
 
   async function setRequired(ctx: AuthContext, userId: string, reason: string, headers: Headers | undefined) {
     await ctx.internalAdapter.updateUser(userId, { [CHANGE_FIELD]: true });

@@ -19,6 +19,14 @@ export const ERROR_CODES = {
     code: "PASSWORD_CHANGE_REQUIRED",
     message: "Change your password to continue.",
   },
+  TWO_FACTOR_SETUP_REQUIRED: {
+    code: "TWO_FACTOR_SETUP_REQUIRED",
+    message: "Turn on two-factor authentication to continue.",
+  },
+  TWO_FACTOR_REQUIRED: {
+    code: "TWO_FACTOR_REQUIRED",
+    message: "Two-factor authentication is required for this account.",
+  },
 } as const;
 
 export type ShieldErrorCode = keyof typeof ERROR_CODES;
