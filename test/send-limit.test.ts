@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it, mock } from "node:test";
-import { magicLink } from "better-auth/plugins";
+import { emailOTP, magicLink } from "better-auth/plugins";
 import { shield, type ShieldOptions } from "../src/index.js";
-import { EMAIL, memoryStorage, post, setup, signUp } from "./helpers.js";
+import { EMAIL, PASSWORD, cookiesOf, memoryStorage, post, setup, signUp } from "./helpers.js";
 
 const backends = {
   memory: () => ({}),
@@ -105,6 +105,48 @@ for (const [backend, extra] of Object.entries(backends)) {
       const tuned = await app({ sendLimit: { short: { max: 5 }, daily: false } });
       for (let i = 0; i < 5; i++) assert.equal((await tuned.link(EMAIL)).status, 200);
       assert.equal((await tuned.link(EMAIL)).status, 429);
+    });
+
+    it("limits email changes by the new address, and keeps them shut during a forced password change", async () => {
+      const sent: string[] = [];
+      const base: { auth?: object; database?: "sqlite" } = extra();
+      const { auth } = await setup({
+        ...base,
+        auth: {
+          ...base.auth,
+          user: { changeEmail: { enabled: true } },
+          emailVerification: { sendVerificationEmail: async ({ user }) => void sent.push(`verify:${user.email}`) },
+        },
+        plugins: [
+          magicLink({ sendMagicLink: async ({ email }) => void sent.push(`link:${email}`) }),
+          emailOTP({ sendVerificationOTP: async ({ email }) => void sent.push(`otp:${email}`), changeEmail: { enabled: true } }),
+          shield({ password: {} }),
+        ],
+      });
+      const cookie = cookiesOf(await post(auth, "/sign-up/email", { email: EMAIL, password: PASSWORD, name: "Ada" }));
+      const change = (newEmail: string) => post(auth, "/change-email", { newEmail }, undefined, cookie);
+      const otp = (newEmail: string) => post(auth, "/email-otp/request-email-change", { newEmail }, undefined, cookie);
+
+      for (let i = 0; i < 3; i++) assert.equal((await change("victim@example.com")).status, 200);
+      const limited = await change("Victim@Example.com");
+      assert.equal(limited.status, 429);
+      assert.equal(((await limited.json()) as { code: string }).code, "SEND_LIMITED");
+      // One count per address, whichever endpoint sends.
+      assert.equal((await otp("victim@example.com")).status, 429);
+      assert.equal((await post(auth, "/sign-in/magic-link", { email: "victim@example.com" })).status, 429);
+      assert.deepEqual(sent, ["verify:victim@example.com", "verify:victim@example.com", "verify:victim@example.com"]);
+
+      const { user } = (await auth.api.getSession({ headers: new Headers({ cookie }) }))!;
+      await auth.api.shieldRequirePasswordChange({ body: { userId: user.id } });
+      for (let i = 0; i < 4; i++) {
+        const blocked = await otp("grace@example.com");
+        assert.equal(blocked.status, 403);
+        assert.equal(((await blocked.json()) as { code: string }).code, "PASSWORD_CHANGE_REQUIRED");
+      }
+      await post(auth, "/change-password", { currentPassword: PASSWORD, newPassword: "next-password-1" }, undefined, cookie);
+      // The refused requests used up none of the address's sends.
+      for (let i = 0; i < 3; i++) assert.equal((await otp("grace@example.com")).status, 200);
+      assert.equal((await otp("grace@example.com")).status, 429);
     });
   });
 }

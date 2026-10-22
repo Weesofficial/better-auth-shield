@@ -6,6 +6,7 @@ import { ERROR_CODES } from "./error-codes.js";
 import {
   FAILURE_CODES,
   SEND_PATHS,
+  SIGNED_IN_SEND_PATHS,
   SIGN_IN_PATHS,
   TWO_FACTOR_FAILURE_CODES,
   TWO_FACTOR_PATHS,
@@ -19,7 +20,7 @@ import { stepUp, stepUpEndpoints, type StepUpOptions } from "./step-up.js";
 export { ERROR_CODES } from "./error-codes.js";
 export type { ShieldErrorCode } from "./error-codes.js";
 export type { LockRule } from "./counter.js";
-export { SEND_PATHS, SIGN_IN_PATHS } from "./identifier.js";
+export { SEND_PATHS, SIGNED_IN_SEND_PATHS, SIGN_IN_PATHS } from "./identifier.js";
 export { hashIdentifier, normalizeIdentifier } from "./identifier.js";
 export { CHANGE_FIELD, HISTORY_MODEL } from "./password.js";
 export type { PasswordOptions } from "./password.js";
@@ -246,6 +247,28 @@ export const shield = (options: ShieldOptions = {}) => {
     return { identifier, hash, strictKey: `${hash}:${ip}`, headers };
   }
 
+  /** Counts a send to the address in `field`; 429 once the address has had its share. */
+  async function limitSend(ctx: Parameters<Parameters<typeof createAuthMiddleware>[0]>[0], field: string) {
+    const identifier = normalizeIdentifier(field, (ctx.body as Record<string, unknown> | undefined)?.[field]);
+    if (!identifier) return;
+    const hash = await hashIdentifier(ctx.context.secret, identifier);
+    const headers = ctx.request?.headers ?? ctx.headers;
+    // A refused request counts toward no window, so waiting out the short one is enough.
+    const keys = sendRules.map(({ scope }) => `${hash}:send-${scope}`);
+    const until = Math.max(...(await Promise.all(keys.map((key) => store.lockedUntil(key)))));
+    if (until) throw tooMany(ERROR_CODES.SEND_LIMITED, until);
+    // Counted before sending, so concurrent requests can't all slip under the limit.
+    for (const { scope, rule } of sendRules) {
+      const result = await store.fail(`${hash}:send-${scope}`, rule);
+      if (result.justLocked) {
+        const metadata = { path: ctx.path, scope, until: new Date(result.lockedUntil).toISOString() };
+        await emit(ctx.context, { type: "send.limited", identifierHash: hash, metadata }, identifier, headers);
+      } else if (result.lockedUntil) {
+        throw tooMany(ERROR_CODES.SEND_LIMITED, result.lockedUntil);
+      }
+    }
+  }
+
   return {
     id: "shield",
     init(ctx) {
@@ -276,31 +299,16 @@ export const shield = (options: ShieldOptions = {}) => {
         },
         {
           matcher: (ctx) => !!ctx.path && ctx.path in sendPaths && sendRules.length > 0,
-          handler: createAuthMiddleware(async (ctx) => {
-            const field = sendPaths[ctx.path!]!;
-            const identifier = normalizeIdentifier(field, (ctx.body as Record<string, unknown> | undefined)?.[field]);
-            if (!identifier) return;
-            const hash = await hashIdentifier(ctx.context.secret, identifier);
-            const headers = ctx.request?.headers ?? ctx.headers;
-            // A refused request counts toward no window, so waiting out the short one is enough.
-            const keys = sendRules.map(({ scope }) => `${hash}:send-${scope}`);
-            const until = Math.max(...(await Promise.all(keys.map((key) => store.lockedUntil(key)))));
-            if (until) throw tooMany(ERROR_CODES.SEND_LIMITED, until);
-            // Counted before sending, so concurrent requests can't all slip under the limit.
-            for (const { scope, rule } of sendRules) {
-              const result = await store.fail(`${hash}:send-${scope}`, rule);
-              if (result.justLocked) {
-                const metadata = { path: ctx.path, scope, until: new Date(result.lockedUntil).toISOString() };
-                await emit(ctx.context, { type: "send.limited", identifierHash: hash, metadata }, identifier, headers);
-              } else if (result.lockedUntil) {
-                throw tooMany(ERROR_CODES.SEND_LIMITED, result.lockedUntil);
-              }
-            }
-          }),
+          handler: createAuthMiddleware((ctx) => limitSend(ctx, sendPaths[ctx.path!]!)),
         },
         ...(policy?.before ?? []),
         ...(mandatory?.before ?? []),
         ...(stepper?.before ?? []),
+        {
+          // After the gates above, so a request they refuse never uses up the address's sends.
+          matcher: (ctx) => !!ctx.path && ctx.path in SIGNED_IN_SEND_PATHS && !(ctx.path in sendPaths) && sendRules.length > 0,
+          handler: createAuthMiddleware((ctx) => limitSend(ctx, SIGNED_IN_SEND_PATHS[ctx.path!]!)),
+        },
       ],
       after: [
         {

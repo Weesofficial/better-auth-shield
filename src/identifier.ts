@@ -33,6 +33,17 @@ export const SEND_PATHS: Record<string, string> = {
 };
 
 /**
+ * Signed-in endpoints that email a code or link to an address the user names.
+ * Limited like `SEND_PATHS`, keyed by that address, but kept out of
+ * `OPEN_PATHS`: a session that must change its password or set up two-factor
+ * can't call them.
+ */
+export const SIGNED_IN_SEND_PATHS: Record<string, string> = {
+  "/change-email": "newEmail",
+  "/email-otp/request-email-change": "newEmail",
+};
+
+/**
  * Second-factor endpoints of the `twoFactor` plugin and the codes of a wrong
  * code. Better Auth locks the account itself after repeated failures
  * (`accountLockout`, on by default); shield only records them. Refusals
