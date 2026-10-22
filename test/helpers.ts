@@ -31,6 +31,7 @@ export async function setup({
     verification: [],
     shieldCounter: [],
     securityEvent: [],
+    twoFactor: [],
   };
   const config = {
     secret: "test-secret-0123456789-abcdefghijklmnop",
@@ -53,11 +54,16 @@ export async function signUp(auth: Auth, email = EMAIL, name = "ada_l") {
   return auth.api.signUpEmail({ body: { email, password: PASSWORD, name: "Ada", username: name } as never });
 }
 
-export function post(auth: Auth, path: string, body: unknown, ip = "203.0.113.7") {
+export function post(auth: Auth, path: string, body: unknown, ip = "203.0.113.7", cookie?: string) {
   return auth.handler(
     new Request(`http://localhost:3000/api/auth${path}`, {
       method: "POST",
-      headers: { "content-type": "application/json", origin: "http://localhost:3000", "x-forwarded-for": ip },
+      headers: {
+        "content-type": "application/json",
+        origin: "http://localhost:3000",
+        "x-forwarded-for": ip,
+        ...(cookie ? { cookie } : {}),
+      },
       body: JSON.stringify(body),
     }),
   );
@@ -97,3 +103,10 @@ export function memoryStorage(): SecondaryStorage & { data: Map<string, { value:
     },
   };
 }
+
+/** The `cookie` header a browser would send back after `res`. */
+export const cookiesOf = (res: Response) =>
+  res.headers
+    .getSetCookie()
+    .map((c) => c.split(";")[0])
+    .join("; ");

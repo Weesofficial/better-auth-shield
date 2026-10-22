@@ -20,6 +20,16 @@ export const FAILURE_CODES = new Set([
   "TOO_MANY_ATTEMPTS",
 ]);
 
+/**
+ * Second-factor endpoints of the `twoFactor` plugin and the codes of a wrong
+ * code. Better Auth locks the account itself after repeated failures
+ * (`accountLockout`, on by default); shield only records them. Refusals
+ * (`ACCOUNT_TEMPORARILY_LOCKED`, `TOO_MANY_ATTEMPTS_REQUEST_NEW_CODE`) are not
+ * recorded, so hammering a locked account can't flood the event table.
+ */
+export const TWO_FACTOR_PATHS = new Set(["/two-factor/verify-totp", "/two-factor/verify-otp", "/two-factor/verify-backup-code"]);
+export const TWO_FACTOR_FAILURE_CODES = new Set(["INVALID_CODE", "INVALID_BACKUP_CODE", "OTP_HAS_EXPIRED"]);
+
 /** Longest identifier hashed; longer input is cut so a huge body can't cost an expensive hash. */
 const MAX_LENGTH = 320;
 

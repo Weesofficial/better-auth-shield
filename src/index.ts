@@ -1,9 +1,16 @@
 import type { AuthContext, BetterAuthPlugin } from "better-auth";
 import { z } from "zod";
-import { APIError, createAuthEndpoint, createAuthMiddleware, getIP } from "better-auth/api";
+import { APIError, createAuthEndpoint, createAuthMiddleware, getIP, getSessionFromCtx } from "better-auth/api";
 import { COUNTER_MODEL, databaseStore, secondaryStore, type CounterStore, type LockRule } from "./counter.js";
 import { ERROR_CODES } from "./error-codes.js";
-import { FAILURE_CODES, SIGN_IN_PATHS, hashIdentifier, normalizeIdentifier } from "./identifier.js";
+import {
+  FAILURE_CODES,
+  SIGN_IN_PATHS,
+  TWO_FACTOR_FAILURE_CODES,
+  TWO_FACTOR_PATHS,
+  hashIdentifier,
+  normalizeIdentifier,
+} from "./identifier.js";
 
 export { ERROR_CODES } from "./error-codes.js";
 export type { ShieldErrorCode } from "./error-codes.js";
@@ -12,7 +19,13 @@ export { hashIdentifier, normalizeIdentifier } from "./identifier.js";
 
 export const EVENT_MODEL = "securityEvent";
 
-export type SecurityEventType = "sign_in.success" | "sign_in.failure" | "lockout" | "unlock";
+export type SecurityEventType =
+  | "sign_in.success"
+  | "sign_in.failure"
+  | "lockout"
+  | "unlock"
+  | "two_factor.success"
+  | "two_factor.failure";
 
 export interface SecurityEvent {
   type: SecurityEventType;
@@ -21,7 +34,11 @@ export interface SecurityEvent {
   identifierHash: string | null;
   ip: string | null;
   userAgent: string | null;
-  /** Endpoint path for sign-in events, lock scope and end for lockouts. */
+  /**
+   * Endpoint path for sign-in and second-factor events (plus the error `code`
+   * of a second-factor failure, and `twoFactorPending` when a correct password
+   * still awaits the second factor), lock scope and end for lockouts.
+   */
   metadata: Record<string, unknown> | null;
   createdAt: Date;
 }
@@ -192,13 +209,54 @@ export const shield = (options: ShieldOptions = {}) => {
 
             await store.reset(t.strictKey);
             if (global) await store.reset(t.hash);
-            const user = (returned as { user?: { id?: string } } | null)?.user ?? ctx.context.newSession?.user;
+            const body = returned as { user?: { id?: string }; twoFactorRedirect?: boolean } | null;
+            const user = body?.user ?? ctx.context.newSession?.user;
+            const metadata = body?.twoFactorRedirect ? { path, twoFactorPending: true } : { path };
             await emit(
               ctx.context,
-              { type: "sign_in.success", userId: user?.id ?? null, identifierHash: t.hash, metadata: { path } },
+              { type: "sign_in.success", userId: user?.id ?? null, identifierHash: t.hash, metadata },
               t.identifier,
               t.headers,
             );
+          }),
+        },
+        {
+          matcher: (ctx) => !!ctx.path && TWO_FACTOR_PATHS.has(ctx.path),
+          handler: createAuthMiddleware(async (ctx) => {
+            const returned = ctx.context.returned;
+            const headers = ctx.request?.headers ?? ctx.headers;
+            const path = ctx.path;
+            if (returned instanceof APIError) {
+              const code = String(returned.body?.code);
+              if (!TWO_FACTOR_FAILURE_CODES.has(code)) return;
+              // The user is behind the signed two_factor cookie during sign-in, or the session otherwise.
+              let userId = (await getSessionFromCtx(ctx).catch(() => null))?.user.id ?? null;
+              if (!userId) {
+                const token = await ctx.getSignedCookie(ctx.context.createAuthCookie("two_factor").name, ctx.context.secret);
+                userId = (token && (await ctx.context.internalAdapter.findVerificationValue(token))?.value) || null;
+              }
+              await emit(ctx.context, { type: "two_factor.failure", userId, identifierHash: null, metadata: { path, code } }, null, headers);
+              // Better Auth refuses every attempt while its lock holds, so only the failure that set it sees it.
+              const row = userId
+                ? await ctx.context.adapter.findOne<{ lockedUntil?: Date | string | null }>({
+                    model: "twoFactor",
+                    where: [{ field: "userId", value: userId }],
+                  })
+                : null;
+              const until = row?.lockedUntil ? new Date(row.lockedUntil).getTime() : 0;
+              if (until > Date.now()) {
+                await emit(
+                  ctx.context,
+                  { type: "lockout", userId, identifierHash: null, metadata: { scope: "two_factor", until: new Date(until).toISOString() } },
+                  null,
+                  headers,
+                );
+              }
+              return;
+            }
+            if (returned === undefined || (returned instanceof Response && !returned.ok)) return;
+            const userId = (returned as { user?: { id?: string } } | null)?.user?.id ?? ctx.context.newSession?.user.id ?? null;
+            await emit(ctx.context, { type: "two_factor.success", userId, identifierHash: null, metadata: { path } }, null, headers);
           }),
         },
       ],
