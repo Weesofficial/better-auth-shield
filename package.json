@@ -1,21 +1,66 @@
 {
   "name": "better-auth-shield",
   "version": "0.0.1",
-  "description": "Account security for Better Auth: per-account lockout, OTP send limits, password history, required 2FA, step-up auth and a security event log.",
-  "license": "MIT",
+  "description": "Account security for Better Auth: lockout per email or username, a security event log, and more.",
   "keywords": [
     "better-auth",
-    "auth",
+    "better-auth-plugin",
     "security",
-    "lockout"
+    "lockout",
+    "brute-force",
+    "audit-log",
+    "2fa",
+    "auth"
   ],
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Weesofficial/better-auth-shield.git"
   },
   "homepage": "https://github.com/Weesofficial/better-auth-shield#readme",
+  "bugs": {
+    "url": "https://github.com/Weesofficial/better-auth-shield/issues"
+  },
+  "type": "module",
+  "sideEffects": false,
   "files": [
-    "README.md",
-    "LICENSE"
-  ]
+    "dist"
+  ],
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./client": {
+      "types": "./dist/client.d.ts",
+      "import": "./dist/client.js",
+      "require": "./dist/client.cjs"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test test/*.test.ts",
+    "prepublishOnly": "npm run typecheck && npm test && npm run build"
+  },
+  "dependencies": {
+    "zod": "^4.5.4"
+  },
+  "peerDependencies": {
+    "better-auth": ">=1.7.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "better-auth": "^1.7.12",
+    "tsup": "^8.3.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  },
+  "engines": {
+    "node": ">=20.19"
+  }
 }

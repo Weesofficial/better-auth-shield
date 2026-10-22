@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: [20, 22, 24]
+        # An include entry whose keys all match a combination is merged into it,
+        # so without this axis the two jobs below would replace the plain
+        # Node 24 job instead of being added next to it.
+        deps: [lockfile]
+        include:
+          # The lockfile pins one Better Auth release; these run the suite
+          # against the newest release and 1.7.0, the oldest supported one.
+          - node: 24
+            deps: latest
+          - node: 24
+            deps: 1.7.0
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      # Not --no-save: npm 10 crashes on it (Cannot read properties of null, edgesOut).
+      - if: matrix.deps != 'lockfile'
+        run: npm install --no-audit --no-fund --legacy-peer-deps better-auth@${{ matrix.deps }}
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
